@@ -2,11 +2,55 @@
   "name": "import-xlsx-tranout",
   "version": "0.1.0",
   "private": true,
+  "main": "electron/main.js",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "electron:dev": "concurrently -k -n \"Next,Electron\" -c \"blue,green\" \"next dev\" \"wait-on http://localhost:3000 && env -u ELECTRON_RUN_AS_NODE cross-env NODE_ENV=development electron .\"",
+    "electron:build": "next build && node scripts/copy-standalone.js && electron-builder",
+    "electron:build:mac": "next build && node scripts/copy-standalone.js && electron-builder --mac",
+    "electron:build:win": "next build && node scripts/copy-standalone.js && electron-builder --win",
+    "electron:build:linux": "next build && node scripts/copy-standalone.js && electron-builder --linux"
+  },
+  "build": {
+    "appId": "com.nateesoft.import-xlsx-tranout",
+    "productName": "Import Excel Menu Items",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".next/standalone",
+        "to": "standalone",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
   },
   "dependencies": {
     "next": "16.1.6",
@@ -19,9 +63,14 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^33.4.11",
+    "electron-builder": "^26.8.1",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "wait-on": "^9.0.4"
   }
 }

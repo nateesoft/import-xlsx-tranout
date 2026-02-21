@@ -88,7 +88,7 @@ export default function Home() {
     if (savedUrl) setApiUrl(savedUrl);
   }, []);
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setLoginError("");
     setLoginLoading(true);
@@ -427,7 +427,7 @@ export default function Home() {
       )}
 
       {/* ── Header ────────────────────────────────────────────────────────── */}
-      <header className="bg-white border-b border-gray-200 px-6 py-4">
+      <header className="app-drag bg-white border-b border-gray-200 px-6 py-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <div>
@@ -461,7 +461,7 @@ export default function Home() {
           </div>
           {isAuthenticated && (
             <button onClick={handleLogout}
-              className="flex items-center gap-2 px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+              className="app-no-drag flex items-center gap-2 px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                   d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
