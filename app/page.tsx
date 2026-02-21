@@ -31,9 +31,11 @@ type MappingTemplate = {
   id: string;
   name: string;
   headersKey: string;
+  headerTable?: string;
   targetTable: string;
   dbColumns: string[];
   mappings: Record<string, string>;
+  fixedValues?: Record<string, string>;
   createdAt: number;
 };
 
@@ -69,6 +71,12 @@ export default function Home() {
 
   // ── Step & Mapping ────────────────────────────────────────────────────────
   const [step, setStep] = useState<"import" | "mapping">("import");
+  // Header table
+  const [headerTable, setHeaderTable] = useState("");
+  const [docNo, setDocNo] = useState("");
+  const [docDate, setDocDate] = useState("");
+  const [branchCode, setBranchCode] = useState("");
+  // Detail table
   const [targetTable, setTargetTable] = useState("");
   const [dbColumns, setDbColumns] = useState<string[]>([]);
   const [newDbColInput, setNewDbColInput] = useState("");
@@ -76,6 +84,8 @@ export default function Home() {
   const [mappings, setMappings] = useState<Record<string, string>>({});
   const [draggedExcelCol, setDraggedExcelCol] = useState<string | null>(null);
   const [dropOverCol, setDropOverCol] = useState<string | null>(null);
+  // fixedValues: dbCol → static value (used for all rows)
+  const [fixedValues, setFixedValues] = useState<Record<string, string>>({});
 
   // ── Templates ─────────────────────────────────────────────────────────────
   const [templates, setTemplates] = useState<MappingTemplate[]>([]);
@@ -185,6 +195,7 @@ export default function Home() {
     if (res.ok && res.columns) {
       setDbColumns(res.columns);
       setMappings({});
+      setFixedValues({});
       setLoadColStatus("idle");
     } else {
       setLoadColStatus("error");
@@ -284,6 +295,8 @@ export default function Home() {
     setData([]); setHeaders([]); setFileName(""); setSheets([]);
     setSelectedSheet(""); setWorkbook(null); setError("");
     setCurrentPage(1); setColWidths({}); setStep("import");
+    setHeaderTable(""); setDocNo(""); setDocDate(""); setBranchCode("");
+    setFixedValues({});
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -307,11 +320,8 @@ export default function Home() {
 
   const removeDbColumn = (col: string) => {
     setDbColumns((prev) => prev.filter((c) => c !== col));
-    setMappings((prev) => {
-      const next = { ...prev };
-      delete next[col];
-      return next;
-    });
+    setMappings((prev) => { const next = { ...prev }; delete next[col]; return next; });
+    setFixedValues((prev) => { const next = { ...prev }; delete next[col]; return next; });
   };
 
   const clearMapping = (dbCol: string) => {
@@ -322,15 +332,38 @@ export default function Home() {
     });
   };
 
+  const setFixedValue = (dbCol: string, value: string) => {
+    setFixedValues((prev) => ({ ...prev, [dbCol]: value }));
+    // Clear Excel mapping for this col when a fixed value is being entered
+    if (value !== "") {
+      setMappings((prev) => {
+        const next = { ...prev };
+        delete next[dbCol];
+        return next;
+      });
+    }
+  };
+
+  const clearFixedValue = (dbCol: string) => {
+    setFixedValues((prev) => {
+      const next = { ...prev };
+      delete next[dbCol];
+      return next;
+    });
+  };
+
   const handleSaveToDb = async () => {
     if (!apiUrl.trim()) return;
     localStorage.setItem(API_URL_KEY, apiUrl.trim());
 
-    // Transform: apply mappings — produce array of { dbCol: value }
+    // Transform: apply mappings + fixed values — produce array of { dbCol: value }
     const transformed = data.map((row) => {
       const result: RowData = {};
       for (const [dbCol, excelCol] of Object.entries(mappings)) {
         result[dbCol] = row[excelCol] ?? null;
+      }
+      for (const [dbCol, value] of Object.entries(fixedValues)) {
+        if (value !== "") result[dbCol] = value;
       }
       return result;
     });
@@ -342,7 +375,12 @@ export default function Home() {
       const res = await fetch(apiUrl.trim(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ table: targetTable, data: transformed }),
+        body: JSON.stringify({
+          headerTable,
+          headerData: { doc_no: docNo, date: docDate, branch_code: branchCode },
+          detailTable: targetTable,
+          detailData: transformed,
+        }),
       });
       if (!res.ok) {
         const errJson = await res.json().catch(() => ({}));
@@ -379,9 +417,11 @@ export default function Home() {
       id: Date.now().toString(),
       name,
       headersKey: headers.join("|"),
+      headerTable,
       targetTable,
       dbColumns: [...dbColumns],
       mappings: { ...mappings },
+      fixedValues: { ...fixedValues },
       createdAt: Date.now(),
     };
     const updated = [...templates, tpl];
@@ -392,9 +432,11 @@ export default function Home() {
   };
 
   const loadTemplate = (tpl: MappingTemplate) => {
+    setHeaderTable(tpl.headerTable ?? "");
     setTargetTable(tpl.targetTable);
     setDbColumns([...tpl.dbColumns]);
     setMappings({ ...tpl.mappings });
+    setFixedValues({ ...(tpl.fixedValues ?? {}) });
     setShowTemplatePanel(false);
   };
 
@@ -411,7 +453,7 @@ export default function Home() {
 
   // Excel columns that are already mapped to some DB column
   const mappedExcelCols = useMemo(() => new Set(Object.values(mappings)), [mappings]);
-  const mappedDbCount = Object.keys(mappings).length;
+  const mappedDbCount = Object.keys(mappings).length + Object.keys(fixedValues).filter((k) => fixedValues[k] !== "").length;
   const headersKey = headers.join("|");
   const matchingTemplates = useMemo(
     () => templates.filter((t) => t.headersKey === headersKey),
@@ -956,7 +998,8 @@ export default function Home() {
                       <h3 className="text-base font-semibold text-gray-900">บันทึกลงฐานข้อมูล</h3>
                       <p className="text-xs text-gray-400">
                         {data.length.toLocaleString()} แถว · {mappedDbCount} columns mapped
-                        {targetTable && <> · ตาราง <span className="font-mono">{targetTable}</span></>}
+                        {targetTable && <> · detail: <span className="font-mono">{targetTable}</span></>}
+                        {headerTable && <> · header: <span className="font-mono">{headerTable}</span></>}
                       </p>
                     </div>
                   </div>
@@ -974,25 +1017,44 @@ export default function Home() {
                           className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-green-500"
                           autoFocus
                         />
-                        <p className="text-xs text-gray-400 mt-1">จะส่ง POST request พร้อม JSON: <span className="font-mono">{"{ table, data: [...] }"}</span></p>
+                        <p className="text-xs text-gray-400 mt-1">จะส่ง POST: <span className="font-mono">{"{ headerTable, headerData, detailTable, detailData: [...] }"}</span></p>
                       </div>
 
                       {/* Preview summary */}
-                      <div className="bg-gray-50 rounded-lg p-3 mb-4 text-xs text-gray-600 space-y-1 border border-gray-100">
-                        <div className="flex justify-between">
-                          <span>จำนวนแถว</span>
-                          <span className="font-semibold text-gray-800">{data.length.toLocaleString()}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>Columns ที่ map แล้ว</span>
-                          <span className="font-semibold text-gray-800">{mappedDbCount}</span>
-                        </div>
-                        {targetTable && (
-                          <div className="flex justify-between">
-                            <span>ตาราง</span>
-                            <span className="font-mono font-semibold text-gray-800">{targetTable}</span>
+                      <div className="bg-gray-50 rounded-lg p-3 mb-4 text-xs text-gray-600 space-y-1.5 border border-gray-100">
+                        {/* Header section */}
+                        {(headerTable || docNo || docDate || branchCode) && (
+                          <div className="pb-1.5 border-b border-gray-200">
+                            <p className="text-[10px] font-semibold text-amber-600 uppercase tracking-wide mb-1">Header</p>
+                            {headerTable && (
+                              <div className="flex justify-between">
+                                <span>ตาราง</span>
+                                <span className="font-mono font-semibold text-gray-800">{headerTable}</span>
+                              </div>
+                            )}
+                            {docNo && <div className="flex justify-between"><span>เลขที่เอกสาร</span><span className="font-semibold text-gray-800">{docNo}</span></div>}
+                            {docDate && <div className="flex justify-between"><span>วันที่</span><span className="font-semibold text-gray-800">{docDate}</span></div>}
+                            {branchCode && <div className="flex justify-between"><span>รหัสสาขา</span><span className="font-semibold text-gray-800">{branchCode}</span></div>}
                           </div>
                         )}
+                        {/* Detail section */}
+                        <div>
+                          <p className="text-[10px] font-semibold text-blue-600 uppercase tracking-wide mb-1">Detail</p>
+                          <div className="flex justify-between">
+                            <span>จำนวนแถว</span>
+                            <span className="font-semibold text-gray-800">{data.length.toLocaleString()}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span>Columns ที่ map แล้ว</span>
+                            <span className="font-semibold text-gray-800">{mappedDbCount}</span>
+                          </div>
+                          {targetTable && (
+                            <div className="flex justify-between">
+                              <span>ตาราง</span>
+                              <span className="font-mono font-semibold text-gray-800">{targetTable}</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
 
                       <div className="flex gap-2 justify-end">
@@ -1220,6 +1282,64 @@ export default function Home() {
               </div>
             )}
 
+            {/* ── Header Table Card ────────────────────────────────────── */}
+            <div className="bg-white rounded-xl border border-gray-200 mb-3 overflow-hidden">
+              <div className="px-5 py-3 border-b border-gray-100 bg-amber-50 flex items-center gap-2">
+                <svg className="w-4 h-4 text-amber-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <h4 className="text-sm font-semibold text-amber-800">ข้อมูล Header</h4>
+                <span className="text-xs text-amber-600">ข้อมูลระดับเอกสารที่บันทึกใน header table</span>
+              </div>
+              <div className="px-5 py-4 flex flex-wrap gap-4 items-end">
+                {/* Header table name */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">ตาราง Header</label>
+                  <input
+                    type="text"
+                    value={headerTable}
+                    onChange={(e) => setHeaderTable(e.target.value)}
+                    placeholder="header_table"
+                    className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-amber-400 w-40"
+                  />
+                </div>
+                <div className="w-px h-8 bg-gray-200 self-center" />
+                {/* เลขที่เอกสาร */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">เลขที่เอกสาร <span className="text-gray-400 font-normal">(doc_no)</span></label>
+                  <input
+                    type="text"
+                    value={docNo}
+                    onChange={(e) => setDocNo(e.target.value)}
+                    placeholder="DOC-0001"
+                    className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 w-36"
+                  />
+                </div>
+                {/* วันที่ */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">วันที่ <span className="text-gray-400 font-normal">(date)</span></label>
+                  <input
+                    type="date"
+                    value={docDate}
+                    onChange={(e) => setDocDate(e.target.value)}
+                    className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 w-40"
+                  />
+                </div>
+                {/* รหัสสาขา */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">รหัสสาขา <span className="text-gray-400 font-normal">(branch_code)</span></label>
+                  <input
+                    type="text"
+                    value={branchCode}
+                    onChange={(e) => setBranchCode(e.target.value)}
+                    placeholder="BKK01"
+                    className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 w-28"
+                  />
+                </div>
+              </div>
+            </div>
+
             {/* Two-column mapping layout */}
             <div className="flex gap-4" style={{ minHeight: "calc(100vh - 260px)" }}>
 
@@ -1355,6 +1475,7 @@ export default function Home() {
                     ) : (
                       dbColumns.map((dbCol) => {
                         const mappedFrom = mappings[dbCol];
+                        const fixedVal = fixedValues[dbCol] ?? "";
                         const isOver = dropOverCol === dbCol;
                         const isActiveDrag = !!draggedExcelCol;
                         return (
@@ -1371,7 +1492,7 @@ export default function Home() {
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
                             </svg>
 
-                            {/* Drop zone */}
+                            {/* Drop zone / fixed value area */}
                             <div
                               className="flex-1"
                               onDragOver={(e) => { e.preventDefault(); setDropOverCol(dbCol); }}
@@ -1380,45 +1501,77 @@ export default function Home() {
                                 e.preventDefault();
                                 if (draggedExcelCol) {
                                   setMappings((prev) => ({ ...prev, [dbCol]: draggedExcelCol }));
+                                  clearFixedValue(dbCol);
                                   setDraggedExcelCol(null);
                                 }
                                 setDropOverCol(null);
                               }}
                             >
                               {mappedFrom ? (
-                                // Mapped state
+                                // Excel column mapped (green chip)
                                 <div className="flex items-center gap-2 px-3 py-2 bg-green-50 border border-green-200 rounded-lg">
                                   <svg className="w-3.5 h-3.5 text-green-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
                                   </svg>
                                   <span className="font-mono text-sm text-green-700 font-medium flex-1 truncate">{mappedFrom}</span>
-                                  <button
-                                    onClick={() => clearMapping(dbCol)}
-                                    className="text-green-400 hover:text-red-500 transition-colors ml-1 flex-shrink-0"
-                                    title="ลบ mapping"
-                                  >
+                                  <button onClick={() => clearMapping(dbCol)}
+                                    className="text-green-400 hover:text-red-500 transition-colors ml-1 flex-shrink-0" title="ลบ mapping">
                                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                                     </svg>
                                   </button>
                                 </div>
                               ) : (
-                                // Empty drop zone
-                                <div
-                                  className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border-2 border-dashed transition-all"
-                                  style={{
-                                    borderColor: isOver ? "#3b82f6" : isActiveDrag ? "#93c5fd" : "#e2e8f0",
-                                    background: isOver ? "#eff6ff" : isActiveDrag ? "#f8faff" : "transparent",
-                                  }}
-                                >
-                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"
-                                    style={{ color: isOver ? "#3b82f6" : "#cbd5e1" }}>
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                      d="M19 13l-7 7-7-7m14-8l-7 7-7-7" />
-                                  </svg>
-                                  <span className="text-xs" style={{ color: isOver ? "#3b82f6" : "#94a3b8" }}>
-                                    {isOver ? "วางที่นี่" : "ลากคอลัมน์มาวาง"}
-                                  </span>
+                                // No Excel mapping: drop zone (when empty) + fixed value input (always visible)
+                                <div className="flex items-center gap-2">
+                                  {/* Drop zone — hidden when fixed value is set */}
+                                  {fixedVal === "" && (
+                                    <div
+                                      className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border-2 border-dashed transition-all"
+                                      style={{
+                                        borderColor: isOver ? "#3b82f6" : isActiveDrag ? "#93c5fd" : "#e2e8f0",
+                                        background: isOver ? "#eff6ff" : isActiveDrag ? "#f8faff" : "transparent",
+                                      }}
+                                    >
+                                      <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                                        style={{ color: isOver ? "#3b82f6" : "#cbd5e1" }}>
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                          d="M19 13l-7 7-7-7m14-8l-7 7-7-7" />
+                                      </svg>
+                                      <span className="text-xs" style={{ color: isOver ? "#3b82f6" : "#94a3b8" }}>
+                                        {isOver ? "วางที่นี่" : "ลากคอลัมน์มาวาง"}
+                                      </span>
+                                    </div>
+                                  )}
+                                  {fixedVal === "" && (
+                                    <span className="text-xs text-gray-300 flex-shrink-0 select-none">หรือ</span>
+                                  )}
+                                  {/* Fixed value input — always in DOM to preserve focus/typing */}
+                                  <div className={`flex items-center gap-1 ${fixedVal ? "flex-1" : "flex-shrink-0"}`}>
+                                    <input
+                                      type="text"
+                                      value={fixedVal}
+                                      onChange={(e) => setFixedValue(dbCol, e.target.value)}
+                                      placeholder="ค่าคงที่..."
+                                      onClick={(e) => e.stopPropagation()}
+                                      className={`rounded-lg px-2 py-2 text-xs font-mono focus:outline-none focus:ring-2 transition-colors ${
+                                        fixedVal
+                                          ? "w-full border border-amber-300 bg-amber-50 text-amber-700 focus:ring-amber-400 focus:border-amber-400"
+                                          : "w-28 border border-dashed border-gray-300 focus:ring-amber-400 focus:border-amber-400 placeholder:text-gray-300"
+                                      }`}
+                                    />
+                                    {fixedVal && (
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); clearFixedValue(dbCol); }}
+                                        className="text-amber-400 hover:text-red-500 transition-colors flex-shrink-0"
+                                        title="ลบค่าคงที่"
+                                      >
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                        </svg>
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               )}
                             </div>
