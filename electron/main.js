@@ -1,11 +1,83 @@
-const { app, BrowserWindow, shell } = require("electron");
+const { app, BrowserWindow, shell, ipcMain } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
 const http = require("http");
+const fs = require("fs");
 
 // In packaged app, isPackaged = true. In dev (electron .), isPackaged = false.
 const isDev = !app.isPackaged;
 const PORT = isDev ? 3000 : 3099;
+
+// ── MySQL config path ─────────────────────────────────────────────────────
+function getMysqlConfigPath() {
+  return path.join(app.getPath("userData"), "mysql-config.json");
+}
+
+// ── MySQL IPC handlers ────────────────────────────────────────────────────
+function setupMysqlIpc() {
+  ipcMain.handle("mysql:load-config", () => {
+    try {
+      const p = getMysqlConfigPath();
+      if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, "utf8"));
+    } catch {}
+    return null;
+  });
+
+  ipcMain.handle("mysql:save-config", (_event, config) => {
+    try {
+      fs.writeFileSync(getMysqlConfigPath(), JSON.stringify(config, null, 2), "utf8");
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle("mysql:test-connection", async (_event, config) => {
+    let conn;
+    try {
+      const mysql = require("mysql2/promise");
+      conn = await mysql.createConnection({
+        host: config.host || "localhost",
+        port: Number(config.port) || 3306,
+        user: config.user,
+        password: config.password,
+        database: config.database,
+        connectTimeout: 5000,
+      });
+      await conn.ping();
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    } finally {
+      if (conn) await conn.end().catch(() => {});
+    }
+  });
+
+  ipcMain.handle("mysql:get-columns", async (_event, { config, table }) => {
+    let conn;
+    try {
+      const mysql = require("mysql2/promise");
+      conn = await mysql.createConnection({
+        host: config.host || "localhost",
+        port: Number(config.port) || 3306,
+        user: config.user,
+        password: config.password,
+        database: config.database,
+        connectTimeout: 5000,
+      });
+      // Escape backticks in table name to prevent injection
+      const safeName = table.replace(/`/g, "``");
+      const [rows] = await conn.execute(`SHOW COLUMNS FROM \`${safeName}\``);
+      return { ok: true, columns: rows.map((r) => r.Field) };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    } finally {
+      if (conn) await conn.end().catch(() => {});
+    }
+  });
+}
+
+setupMysqlIpc();
 
 let mainWindow = null;
 let nextServer = null;

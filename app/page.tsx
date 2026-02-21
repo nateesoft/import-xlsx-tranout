@@ -5,6 +5,28 @@ import * as XLSX from "xlsx";
 
 type RowData = Record<string, string | number | boolean | null>;
 
+type MySqlConfig = {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+};
+
+declare global {
+  interface Window {
+    electronApp?: {
+      platform: string;
+      mysql?: {
+        loadConfig: () => Promise<MySqlConfig | null>;
+        saveConfig: (config: MySqlConfig) => Promise<{ ok: boolean; error?: string }>;
+        testConnection: (config: MySqlConfig) => Promise<{ ok: boolean; error?: string }>;
+        getColumns: (config: MySqlConfig, table: string) => Promise<{ ok: boolean; columns?: string[]; error?: string }>;
+      };
+    };
+  }
+}
+
 type MappingTemplate = {
   id: string;
   name: string;
@@ -67,6 +89,16 @@ export default function Home() {
   const [saveDbStatus, setSaveDbStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [saveDbResult, setSaveDbResult] = useState<{ total: number; success: number; error: string | null }>({ total: 0, success: 0, error: null });
 
+  // ── MySQL ──────────────────────────────────────────────────────────────────
+  const [mysqlConfig, setMysqlConfig] = useState<MySqlConfig>({ host: "localhost", port: 3306, user: "", password: "", database: "" });
+  const [mysqlConnected, setMysqlConnected] = useState(false);
+  const [showMysqlModal, setShowMysqlModal] = useState(false);
+  const [mysqlSaveStatus, setMysqlSaveStatus] = useState<"idle" | "testing" | "ok" | "error">("idle");
+  const [mysqlSaveError, setMysqlSaveError] = useState("");
+  const [showMysqlPwd, setShowMysqlPwd] = useState(false);
+  const [loadColStatus, setLoadColStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [loadColError, setLoadColError] = useState("");
+
   const rowsPerPage = 20;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const resizeRef = useRef<{
@@ -86,6 +118,10 @@ export default function Home() {
     } catch {}
     const savedUrl = localStorage.getItem(API_URL_KEY);
     if (savedUrl) setApiUrl(savedUrl);
+    // Load MySQL config from Electron userData
+    window.electronApp?.mysql?.loadConfig().then((cfg) => {
+      if (cfg) setMysqlConfig(cfg);
+    });
   }, []);
 
   const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -118,6 +154,42 @@ export default function Home() {
     setLoginUsername("");
     setLoginPassword("");
     setLoginError("");
+  };
+
+  // ── MySQL handlers ─────────────────────────────────────────────────────────
+  const handleMysqlConnect = async () => {
+    const electron = window.electronApp;
+    if (!electron?.mysql) return;
+    setMysqlSaveStatus("testing");
+    setMysqlSaveError("");
+    const res = await electron.mysql.testConnection(mysqlConfig);
+    if (res.ok) {
+      await electron.mysql.saveConfig(mysqlConfig);
+      setMysqlConnected(true);
+      setMysqlSaveStatus("ok");
+      setTimeout(() => { setShowMysqlModal(false); setMysqlSaveStatus("idle"); }, 800);
+    } else {
+      setMysqlSaveStatus("error");
+      setMysqlSaveError(res.error ?? "เชื่อมต่อไม่สำเร็จ");
+    }
+  };
+
+  const handleLoadColumnsFromDb = async () => {
+    const trimmed = targetTable.trim();
+    if (!trimmed) return;
+    const electron = window.electronApp;
+    if (!electron?.mysql) return;
+    setLoadColStatus("loading");
+    setLoadColError("");
+    const res = await electron.mysql.getColumns(mysqlConfig, trimmed);
+    if (res.ok && res.columns) {
+      setDbColumns(res.columns);
+      setMappings({});
+      setLoadColStatus("idle");
+    } else {
+      setLoadColStatus("error");
+      setLoadColError(res.error ?? "โหลดไม่สำเร็จ");
+    }
   };
 
   // ── Column resize ─────────────────────────────────────────────────────────
@@ -426,6 +498,136 @@ export default function Home() {
         </div>
       )}
 
+      {/* ── MySQL Config Modal ────────────────────────────────────────────── */}
+      {showMysqlModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: "rgba(15,23,42,0.55)", backdropFilter: "blur(3px)" }}
+          onClick={() => { if (mysqlSaveStatus !== "testing") setShowMysqlModal(false); }}
+        >
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6"
+            style={{ animation: "fadeInUp 0.2s ease" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 mb-5">
+              <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
+                <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582 4 8 4" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">MySQL Connection</h3>
+                <p className="text-xs text-gray-400">กำหนดค่าการเชื่อมต่อฐานข้อมูล (บันทึกใน userData)</p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {/* Host + Port */}
+              <div className="flex gap-3">
+                <div className="flex-1">
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Host</label>
+                  <input type="text" value={mysqlConfig.host}
+                    onChange={(e) => setMysqlConfig((c) => ({ ...c, host: e.target.value }))}
+                    placeholder="localhost"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div className="w-24">
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Port</label>
+                  <input type="number" value={mysqlConfig.port}
+                    onChange={(e) => setMysqlConfig((c) => ({ ...c, port: Number(e.target.value) }))}
+                    placeholder="3306"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+              </div>
+
+              {/* User */}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">User</label>
+                <input type="text" value={mysqlConfig.user}
+                  onChange={(e) => setMysqlConfig((c) => ({ ...c, user: e.target.value }))}
+                  placeholder="root"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+
+              {/* Password */}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Password</label>
+                <div className="relative">
+                  <input type={showMysqlPwd ? "text" : "password"} value={mysqlConfig.password}
+                    onChange={(e) => setMysqlConfig((c) => ({ ...c, password: e.target.value }))}
+                    placeholder="••••••••"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-10 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <button type="button" tabIndex={-1}
+                    onClick={() => setShowMysqlPwd((v) => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                    {showMysqlPwd ? (
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                          d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                      </svg>
+                    ) : (
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                          d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Database */}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Database</label>
+                <input type="text" value={mysqlConfig.database}
+                  onChange={(e) => setMysqlConfig((c) => ({ ...c, database: e.target.value }))}
+                  placeholder="my_database"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+
+              {/* Status feedback */}
+              {mysqlSaveStatus === "ok" && (
+                <div className="flex items-center gap-2 p-3 bg-green-50 border border-green-200 rounded-lg">
+                  <svg className="w-4 h-4 text-green-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span className="text-sm text-green-700">เชื่อมต่อสำเร็จ — บันทึกแล้ว</span>
+                </div>
+              )}
+              {mysqlSaveStatus === "error" && (
+                <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+                  <svg className="w-4 h-4 text-red-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span className="text-sm text-red-600 break-all">{mysqlSaveError}</span>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="flex gap-2 justify-end pt-1">
+                <button onClick={() => setShowMysqlModal(false)}
+                  className="px-4 py-2 text-sm bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200">
+                  ยกเลิก
+                </button>
+                <button onClick={handleMysqlConnect} disabled={mysqlSaveStatus === "testing"}
+                  className="flex items-center gap-1.5 px-5 py-2 text-sm bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors">
+                  {mysqlSaveStatus === "testing" ? (
+                    <>
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      กำลังเชื่อมต่อ...
+                    </>
+                  ) : "เชื่อมต่อ & บันทึก"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Header ────────────────────────────────────────────────────────── */}
       <header className="app-drag bg-white border-b border-gray-200 px-6 py-4">
         <div className="flex items-center justify-between">
@@ -460,14 +662,31 @@ export default function Home() {
             )}
           </div>
           {isAuthenticated && (
-            <button onClick={handleLogout}
-              className="app-no-drag flex items-center gap-2 px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-              </svg>
-              ออกจากระบบ
-            </button>
+            <div className="app-no-drag flex items-center gap-2">
+              {/* MySQL connection button */}
+              {window.electronApp?.mysql && (
+                <button
+                  onClick={() => { setMysqlSaveStatus("idle"); setMysqlSaveError(""); setShowMysqlModal(true); }}
+                  className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+                  title="MySQL Connection"
+                >
+                  <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582 4 8 4" />
+                  </svg>
+                  <span className="text-gray-600">MySQL</span>
+                  <span className={`w-2 h-2 rounded-full ${mysqlConnected ? "bg-green-500" : "bg-gray-300"}`} />
+                </button>
+              )}
+              <button onClick={handleLogout}
+                className="flex items-center gap-2 px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                </svg>
+                ออกจากระบบ
+              </button>
+            </div>
           )}
         </div>
       </header>
@@ -1054,17 +1273,47 @@ export default function Home() {
               <div className="flex-1">
                 <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
                   {/* Target table input */}
-                  <div className="px-5 py-4 border-b border-gray-100 bg-gray-50 flex items-center gap-3">
+                  <div className="px-5 py-4 border-b border-gray-100 bg-gray-50 flex items-center gap-3 flex-wrap">
                     <h3 className="text-sm font-semibold text-gray-700 flex-shrink-0">Database Columns</h3>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-gray-400">ตาราง:</span>
+                    <div className="flex items-center gap-2 flex-1 flex-wrap">
+                      <span className="text-xs text-gray-400 flex-shrink-0">ตาราง:</span>
                       <input
                         type="text"
                         value={targetTable}
-                        onChange={(e) => setTargetTable(e.target.value)}
+                        onChange={(e) => { setTargetTable(e.target.value); setLoadColStatus("idle"); setLoadColError(""); }}
                         placeholder="table_name"
                         className="border border-gray-300 rounded-lg px-3 py-1 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 w-44"
                       />
+                      {/* Load from MySQL button — only visible when Electron + mysql is available */}
+                      {window.electronApp?.mysql && (
+                        <button
+                          onClick={handleLoadColumnsFromDb}
+                          disabled={!targetTable.trim() || loadColStatus === "loading"}
+                          className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                          title={mysqlConnected ? "โหลด columns จาก MySQL" : "กรุณาเชื่อมต่อ MySQL ก่อน"}
+                        >
+                          {loadColStatus === "loading" ? (
+                            <>
+                              <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                              </svg>
+                              กำลังโหลด...
+                            </>
+                          ) : (
+                            <>
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                  d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582 4 8 4" />
+                              </svg>
+                              โหลด Columns จาก DB
+                            </>
+                          )}
+                        </button>
+                      )}
+                      {loadColStatus === "error" && (
+                        <span className="text-xs text-red-500">{loadColError}</span>
+                      )}
                     </div>
                   </div>
 

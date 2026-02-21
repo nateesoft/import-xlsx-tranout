@@ -1,10 +1,15 @@
 // Preload script — runs in renderer context before page loads.
 // contextIsolation: true, so no Node.js APIs are exposed to the page.
-// This file exists as a placeholder and for future IPC use if needed.
 
-const { contextBridge } = require("electron");
+const { contextBridge, ipcRenderer } = require("electron");
 
-// Expose the app version to the renderer (optional, safe)
 contextBridge.exposeInMainWorld("electronApp", {
   platform: process.platform,
+  mysql: {
+    loadConfig: () => ipcRenderer.invoke("mysql:load-config"),
+    saveConfig: (config) => ipcRenderer.invoke("mysql:save-config", config),
+    testConnection: (config) => ipcRenderer.invoke("mysql:test-connection", config),
+    getColumns: (config, table) =>
+      ipcRenderer.invoke("mysql:get-columns", { config, table }),
+  },
 });
