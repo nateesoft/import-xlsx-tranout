@@ -11,5 +11,9 @@ contextBridge.exposeInMainWorld("electronApp", {
     testConnection: (config) => ipcRenderer.invoke("mysql:test-connection", config),
     getColumns: (config, table) =>
       ipcRenderer.invoke("mysql:get-columns", { config, table }),
+    getColumnDefs: (config, table) =>
+      ipcRenderer.invoke("mysql:get-column-defs", { config, table }),
+    insertData: (payload) =>
+      ipcRenderer.invoke("mysql:insert-data", payload),
   },
 });

@@ -75,6 +75,100 @@ function setupMysqlIpc() {
       if (conn) await conn.end().catch(() => {});
     }
   });
+
+  ipcMain.handle("mysql:get-column-defs", async (_event, { config, table }) => {
+    let conn;
+    try {
+      const mysql = require("mysql2/promise");
+      conn = await mysql.createConnection({
+        host: config.host || "localhost",
+        port: Number(config.port) || 3306,
+        user: config.user,
+        password: config.password,
+        database: config.database,
+        connectTimeout: 5000,
+      });
+      const safeName = table.replace(/`/g, "``");
+      const [rows] = await conn.execute(`SHOW COLUMNS FROM \`${safeName}\``);
+      return {
+        ok: true,
+        columns: rows.map((r) => ({ name: r.Field, type: r.Type })),
+      };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    } finally {
+      if (conn) await conn.end().catch(() => {});
+    }
+  });
+
+  ipcMain.handle(
+    "mysql:insert-data",
+    async (_event, { config, headerTable, headerData, detailTable, detailData }) => {
+      let conn;
+      try {
+        const mysql = require("mysql2/promise");
+        conn = await mysql.createConnection({
+          host: config.host || "localhost",
+          port: Number(config.port) || 3306,
+          user: config.user,
+          password: config.password,
+          database: config.database,
+          connectTimeout: 10000,
+        });
+
+        await conn.beginTransaction();
+
+        // 1. Insert header row
+        if (headerTable) {
+          const entries = Object.entries(headerData || {}).filter(
+            ([, v]) => v !== "" && v !== null && v !== undefined
+          );
+          if (entries.length > 0) {
+            const safeTbl = headerTable.replace(/`/g, "``");
+            const cols = entries
+              .map(([k]) => `\`${k.replace(/`/g, "``")}\``)
+              .join(", ");
+            const placeholders = entries.map(() => "?").join(", ");
+            const vals = entries.map(([, v]) => v);
+            await conn.execute(
+              `INSERT INTO \`${safeTbl}\` (${cols}) VALUES (${placeholders})`,
+              vals
+            );
+          }
+        }
+
+        // 2. Insert detail rows
+        let inserted = 0;
+        if (detailTable && Array.isArray(detailData) && detailData.length > 0) {
+          const safeTbl = detailTable.replace(/`/g, "``");
+          for (const row of detailData) {
+            const entries = Object.entries(row).filter(
+              ([, v]) => v !== null && v !== undefined
+            );
+            if (entries.length === 0) continue;
+            const cols = entries
+              .map(([k]) => `\`${k.replace(/`/g, "``")}\``)
+              .join(", ");
+            const placeholders = entries.map(() => "?").join(", ");
+            const vals = entries.map(([, v]) => v);
+            await conn.execute(
+              `INSERT INTO \`${safeTbl}\` (${cols}) VALUES (${placeholders})`,
+              vals
+            );
+            inserted++;
+          }
+        }
+
+        await conn.commit();
+        return { ok: true, inserted };
+      } catch (e) {
+        if (conn) await conn.rollback().catch(() => {});
+        return { ok: false, error: e.message };
+      } finally {
+        if (conn) await conn.end().catch(() => {});
+      }
+    }
+  );
 }
 
 setupMysqlIpc();

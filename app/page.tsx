@@ -13,6 +13,8 @@ type MySqlConfig = {
   database: string;
 };
 
+type ColDef = { name: string; type: string };
+
 declare global {
   interface Window {
     electronApp?: {
@@ -22,9 +24,26 @@ declare global {
         saveConfig: (config: MySqlConfig) => Promise<{ ok: boolean; error?: string }>;
         testConnection: (config: MySqlConfig) => Promise<{ ok: boolean; error?: string }>;
         getColumns: (config: MySqlConfig, table: string) => Promise<{ ok: boolean; columns?: string[]; error?: string }>;
+        getColumnDefs: (config: MySqlConfig, table: string) => Promise<{ ok: boolean; columns?: ColDef[]; error?: string }>;
+        insertData: (payload: {
+          config: MySqlConfig;
+          headerTable?: string;
+          headerData?: Record<string, string>;
+          detailTable?: string;
+          detailData?: RowData[];
+        }) => Promise<{ ok: boolean; inserted?: number; error?: string }>;
       };
     };
   }
+}
+
+function mysqlTypeToInputType(mysqlType: string): "text" | "number" | "date" | "datetime-local" | "time" {
+  const t = mysqlType.toLowerCase();
+  if (/^(int|tinyint|smallint|mediumint|bigint|float|double|decimal|numeric)/.test(t)) return "number";
+  if (t === "date") return "date";
+  if (/^(datetime|timestamp)/.test(t)) return "datetime-local";
+  if (t === "time") return "time";
+  return "text";
 }
 
 type MappingTemplate = {
@@ -44,6 +63,8 @@ const MIN_COL_WIDTH = 60;
 const SESSION_KEY = "xlsx_importer_auth";
 const TEMPLATES_KEY = "xlsx_mapping_templates";
 const API_URL_KEY = "xlsx_api_url";
+// Virtual column that produces 1-based running index for each row
+const INDEX_COL = "__running_index__";
 
 export default function Home() {
   // ── Auth ──────────────────────────────────────────────────────────────────
@@ -108,6 +129,11 @@ export default function Home() {
   const [showMysqlPwd, setShowMysqlPwd] = useState(false);
   const [loadColStatus, setLoadColStatus] = useState<"idle" | "loading" | "error">("idle");
   const [loadColError, setLoadColError] = useState("");
+  // Header table columns (loaded from MySQL — drives dynamic form)
+  const [headerColDefs, setHeaderColDefs] = useState<ColDef[]>([]);
+  const [headerFieldValues, setHeaderFieldValues] = useState<Record<string, string>>({});
+  const [headerColStatus, setHeaderColStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [headerColError, setHeaderColError] = useState("");
 
   const rowsPerPage = 20;
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -200,6 +226,26 @@ export default function Home() {
     } else {
       setLoadColStatus("error");
       setLoadColError(res.error ?? "โหลดไม่สำเร็จ");
+    }
+  };
+
+  const handleLoadHeaderColumnsFromDb = async () => {
+    const trimmed = headerTable.trim();
+    if (!trimmed) return;
+    const electron = window.electronApp;
+    if (!electron?.mysql) return;
+    setHeaderColStatus("loading");
+    setHeaderColError("");
+    const res = await electron.mysql.getColumnDefs(mysqlConfig, trimmed);
+    if (res.ok && res.columns) {
+      setHeaderColDefs(res.columns);
+      const init: Record<string, string> = {};
+      res.columns.forEach((c) => { init[c.name] = ""; });
+      setHeaderFieldValues(init);
+      setHeaderColStatus("idle");
+    } else {
+      setHeaderColStatus("error");
+      setHeaderColError(res.error ?? "โหลดไม่สำเร็จ");
     }
   };
 
@@ -297,6 +343,7 @@ export default function Home() {
     setCurrentPage(1); setColWidths({}); setStep("import");
     setHeaderTable(""); setDocNo(""); setDocDate(""); setBranchCode("");
     setFixedValues({});
+    setHeaderColDefs([]); setHeaderFieldValues({}); setHeaderColStatus("idle"); setHeaderColError("");
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -353,14 +400,11 @@ export default function Home() {
   };
 
   const handleSaveToDb = async () => {
-    if (!apiUrl.trim()) return;
-    localStorage.setItem(API_URL_KEY, apiUrl.trim());
-
     // Transform: apply mappings + fixed values — produce array of { dbCol: value }
-    const transformed = data.map((row) => {
+    const transformed = data.map((row, rowIndex) => {
       const result: RowData = {};
       for (const [dbCol, excelCol] of Object.entries(mappings)) {
-        result[dbCol] = row[excelCol] ?? null;
+        result[dbCol] = excelCol === INDEX_COL ? rowIndex + 1 : (row[excelCol] ?? null);
       }
       for (const [dbCol, value] of Object.entries(fixedValues)) {
         if (value !== "") result[dbCol] = value;
@@ -371,13 +415,49 @@ export default function Home() {
     setSaveDbStatus("loading");
     setSaveDbResult({ total: transformed.length, success: 0, error: null });
 
+    // ── Path A: direct MySQL via Electron IPC ──────────────────────────────
+    if (mysqlConnected && mysqlConfig && window.electronApp?.mysql?.insertData) {
+      try {
+        const result = await window.electronApp.mysql.insertData({
+          config: mysqlConfig,
+          headerTable: headerTable || undefined,
+          headerData: headerColDefs.length > 0 ? headerFieldValues : { doc_no: docNo, date: docDate, branch_code: branchCode },
+          detailTable: targetTable || undefined,
+          detailData: transformed,
+        });
+        if (result.ok) {
+          setSaveDbStatus("success");
+          setSaveDbResult({
+            total: transformed.length,
+            success: result.inserted ?? transformed.length,
+            error: null,
+          });
+        } else {
+          setSaveDbStatus("error");
+          setSaveDbResult({ total: transformed.length, success: 0, error: result.error ?? "เกิดข้อผิดพลาด" });
+        }
+      } catch (err: unknown) {
+        setSaveDbStatus("error");
+        setSaveDbResult({
+          total: transformed.length,
+          success: 0,
+          error: err instanceof Error ? err.message : "ไม่สามารถเชื่อมต่อได้",
+        });
+      }
+      return;
+    }
+
+    // ── Path B: POST to external API endpoint ─────────────────────────────
+    if (!apiUrl.trim()) return;
+    localStorage.setItem(API_URL_KEY, apiUrl.trim());
+
     try {
       const res = await fetch(apiUrl.trim(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           headerTable,
-          headerData: { doc_no: docNo, date: docDate, branch_code: branchCode },
+          headerData: headerColDefs.length > 0 ? headerFieldValues : { doc_no: docNo, date: docDate, branch_code: branchCode },
           detailTable: targetTable,
           detailData: transformed,
         }),
@@ -1004,21 +1084,32 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* API URL input */}
+                  {/* Idle state: MySQL direct or API POST */}
                   {saveDbStatus === "idle" && (
                     <>
-                      <div className="mb-4">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">API Endpoint URL</label>
-                        <input
-                          type="text"
-                          value={apiUrl}
-                          onChange={(e) => setApiUrl(e.target.value)}
-                          placeholder="http://localhost:3001/api/import"
-                          className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-green-500"
-                          autoFocus
-                        />
-                        <p className="text-xs text-gray-400 mt-1">จะส่ง POST: <span className="font-mono">{"{ headerTable, headerData, detailTable, detailData: [...] }"}</span></p>
-                      </div>
+                      {mysqlConnected && mysqlConfig ? (
+                        /* MySQL direct insert — no API URL needed */
+                        <div className="mb-4 flex items-center gap-2 px-3 py-2.5 bg-green-50 border border-green-200 rounded-lg">
+                          <span className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0" />
+                          <span className="text-sm text-green-800 font-medium">
+                            บันทึกตรงสู่ MySQL ({mysqlConfig.database}@{mysqlConfig.host})
+                          </span>
+                        </div>
+                      ) : (
+                        /* API POST fallback */
+                        <div className="mb-4">
+                          <label className="block text-sm font-medium text-gray-700 mb-1">API Endpoint URL</label>
+                          <input
+                            type="text"
+                            value={apiUrl}
+                            onChange={(e) => setApiUrl(e.target.value)}
+                            placeholder="http://localhost:3001/api/import"
+                            className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-green-500"
+                            autoFocus
+                          />
+                          <p className="text-xs text-gray-400 mt-1">จะส่ง POST: <span className="font-mono">{"{ headerTable, headerData, detailTable, detailData: [...] }"}</span></p>
+                        </div>
+                      )}
 
                       {/* Preview summary */}
                       <div className="bg-gray-50 rounded-lg p-3 mb-4 text-xs text-gray-600 space-y-1.5 border border-gray-100">
@@ -1064,7 +1155,7 @@ export default function Home() {
                         </button>
                         <button
                           onClick={handleSaveToDb}
-                          disabled={!apiUrl.trim()}
+                          disabled={!(mysqlConnected && mysqlConfig) && !apiUrl.trim()}
                           className="flex items-center gap-1.5 px-5 py-2 text-sm bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           บันทึก
@@ -1296,48 +1387,113 @@ export default function Home() {
                 {/* Header table name */}
                 <div>
                   <label className="block text-xs font-medium text-gray-600 mb-1">ตาราง Header</label>
-                  <input
-                    type="text"
-                    value={headerTable}
-                    onChange={(e) => setHeaderTable(e.target.value)}
-                    placeholder="header_table"
-                    className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-amber-400 w-40"
-                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={headerTable}
+                      onChange={(e) => { setHeaderTable(e.target.value); setHeaderColDefs([]); setHeaderFieldValues({}); setHeaderColStatus("idle"); setHeaderColError(""); }}
+                      placeholder="header_table"
+                      className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-amber-400 w-40"
+                    />
+                    {window.electronApp?.mysql && (
+                      <button
+                        onClick={handleLoadHeaderColumnsFromDb}
+                        disabled={!headerTable.trim() || headerColStatus === "loading"}
+                        title={mysqlConnected ? "โหลด columns จาก MySQL" : "กรุณาเชื่อมต่อ MySQL ก่อน"}
+                        className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      >
+                        {headerColStatus === "loading" ? (
+                          <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                          </svg>
+                        ) : (
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                          </svg>
+                        )}
+                        โหลด
+                      </button>
+                    )}
+                  </div>
+                  {/* Error */}
+                  {headerColStatus === "error" && (
+                    <p className="text-xs text-red-500 mt-1">{headerColError}</p>
+                  )}
                 </div>
-                <div className="w-px h-8 bg-gray-200 self-center" />
-                {/* เลขที่เอกสาร */}
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">เลขที่เอกสาร <span className="text-gray-400 font-normal">(doc_no)</span></label>
-                  <input
-                    type="text"
-                    value={docNo}
-                    onChange={(e) => setDocNo(e.target.value)}
-                    placeholder="DOC-0001"
-                    className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 w-36"
-                  />
-                </div>
-                {/* วันที่ */}
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">วันที่ <span className="text-gray-400 font-normal">(date)</span></label>
-                  <input
-                    type="date"
-                    value={docDate}
-                    onChange={(e) => setDocDate(e.target.value)}
-                    className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 w-40"
-                  />
-                </div>
-                {/* รหัสสาขา */}
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">รหัสสาขา <span className="text-gray-400 font-normal">(branch_code)</span></label>
-                  <input
-                    type="text"
-                    value={branchCode}
-                    onChange={(e) => setBranchCode(e.target.value)}
-                    placeholder="BKK01"
-                    className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 w-28"
-                  />
-                </div>
+
+                {/* Static fields — shown when no columns loaded from DB */}
+                {headerColDefs.length === 0 && (
+                  <>
+                    <div className="w-px h-8 bg-gray-200 self-center" />
+                    {/* เลขที่เอกสาร */}
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">เลขที่เอกสาร <span className="text-gray-400 font-normal">(doc_no)</span></label>
+                      <input
+                        type="text"
+                        value={docNo}
+                        onChange={(e) => setDocNo(e.target.value)}
+                        placeholder="DOC-0001"
+                        className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 w-36"
+                      />
+                    </div>
+                    {/* วันที่ */}
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">วันที่ <span className="text-gray-400 font-normal">(date)</span></label>
+                      <input
+                        type="date"
+                        value={docDate}
+                        onChange={(e) => setDocDate(e.target.value)}
+                        className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 w-40"
+                      />
+                    </div>
+                    {/* รหัสสาขา */}
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">รหัสสาขา <span className="text-gray-400 font-normal">(branch_code)</span></label>
+                      <input
+                        type="text"
+                        value={branchCode}
+                        onChange={(e) => setBranchCode(e.target.value)}
+                        placeholder="BKK01"
+                        className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 w-28"
+                      />
+                    </div>
+                  </>
+                )}
               </div>
+
+              {/* Dynamic form panel — shown when columns are loaded from MySQL */}
+              {headerColDefs.length > 0 && (
+                <div className="mx-5 mb-4 border border-amber-200 rounded-xl bg-amber-50/60 overflow-hidden">
+                  <div className="px-4 py-2 border-b border-amber-200 bg-amber-100/70 flex items-center gap-2">
+                    <svg className="w-3.5 h-3.5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                    <span className="text-xs font-semibold text-amber-800">กรอกข้อมูล Header</span>
+                    <span className="text-xs text-amber-600 font-mono ml-1">({headerTable})</span>
+                  </div>
+                  <div className="px-4 py-4 flex flex-wrap gap-4">
+                    {headerColDefs.map((col) => {
+                      const inputType = mysqlTypeToInputType(col.type);
+                      return (
+                        <div key={col.name}>
+                          <label className="block text-xs font-medium text-gray-700 mb-1">
+                            {col.name}
+                            <span className="ml-1 text-gray-400 font-normal font-mono text-[11px]">({col.type})</span>
+                          </label>
+                          <input
+                            type={inputType}
+                            value={headerFieldValues[col.name] ?? ""}
+                            onChange={(e) => setHeaderFieldValues((prev) => ({ ...prev, [col.name]: e.target.value }))}
+                            step={inputType === "number" ? "any" : undefined}
+                            className="border border-amber-300 bg-white rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 w-40"
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Two-column mapping layout */}
@@ -1359,6 +1515,26 @@ export default function Home() {
 
                   {/* Column list */}
                   <div className="overflow-y-auto" style={{ maxHeight: "70vh" }}>
+                    {/* Virtual: running index */}
+                    {(() => {
+                      const isMapped = mappedExcelCols.has(INDEX_COL);
+                      const isDraggingThis = draggedExcelCol === INDEX_COL;
+                      return (
+                        <div
+                          draggable
+                          onDragStart={() => setDraggedExcelCol(INDEX_COL)}
+                          onDragEnd={() => setDraggedExcelCol(null)}
+                          style={{ cursor: "grab", opacity: isDraggingThis ? 0.3 : 1, userSelect: "none", borderBottom: "1px solid #ede9fe" }}
+                          className="px-4 py-2.5 bg-violet-50 hover:bg-violet-100 transition-colors flex items-center gap-2"
+                          title="Running index อัตโนมัติ (1, 2, 3, …)"
+                        >
+                          <span className="flex-shrink-0 w-5 h-5 rounded bg-violet-500 text-white text-[10px] font-bold flex items-center justify-center">#</span>
+                          <span className="text-sm font-medium truncate" style={{ color: isMapped ? "#16a34a" : "#5b21b6" }}>
+                            running index
+                          </span>
+                        </div>
+                      );
+                    })()}
                     {headers.map((col) => {
                       const isMapped = mappedExcelCols.has(col);
                       const isDraggingThis = draggedExcelCol === col;
