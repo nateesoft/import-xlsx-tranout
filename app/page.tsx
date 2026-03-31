@@ -25,6 +25,7 @@ declare global {
         testConnection: (config: MySqlConfig) => Promise<{ ok: boolean; error?: string }>;
         getColumns: (config: MySqlConfig, table: string) => Promise<{ ok: boolean; columns?: string[]; error?: string }>;
         getColumnDefs: (config: MySqlConfig, table: string) => Promise<{ ok: boolean; columns?: ColDef[]; error?: string }>;
+        authenticate: (config: MySqlConfig, username: string, password: string) => Promise<{ ok: boolean; error?: string }>;
         insertData: (payload: {
           config: MySqlConfig;
           headerTable?: string;
@@ -62,7 +63,6 @@ const DEFAULT_COL_WIDTH = 150;
 const MIN_COL_WIDTH = 60;
 const SESSION_KEY = "xlsx_importer_auth";
 const TEMPLATES_KEY = "xlsx_mapping_templates";
-const API_URL_KEY = "xlsx_api_url";
 // Virtual column that produces 1-based running index for each row
 const INDEX_COL = "__running_index__";
 
@@ -115,7 +115,6 @@ export default function Home() {
   const [showTemplatePanel, setShowTemplatePanel] = useState(false);
 
   // ── Save to DB ────────────────────────────────────────────────────────────
-  const [apiUrl, setApiUrl] = useState("");
   const [showSaveDbModal, setShowSaveDbModal] = useState(false);
   const [saveDbStatus, setSaveDbStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [saveDbResult, setSaveDbResult] = useState<{ total: number; success: number; error: string | null }>({ total: 0, success: 0, error: null });
@@ -152,8 +151,6 @@ export default function Home() {
       const tpls = localStorage.getItem(TEMPLATES_KEY);
       if (tpls) setTemplates(JSON.parse(tpls));
     } catch {}
-    const savedUrl = localStorage.getItem(API_URL_KEY);
-    if (savedUrl) setApiUrl(savedUrl);
     // Load MySQL config from Electron userData
     window.electronApp?.mysql?.loadConfig().then((cfg) => {
       if (cfg) setMysqlConfig(cfg);
@@ -165,6 +162,22 @@ export default function Home() {
     setLoginError("");
     setLoginLoading(true);
     try {
+      // ── Path A: MySQL via Electron IPC (ใช้เมื่อมี config ครบ) ──────────
+      if (window.electronApp?.mysql?.authenticate) {
+        if (!mysqlConfig.host || !mysqlConfig.user || !mysqlConfig.database) {
+          setLoginError("กรุณาตั้งค่า MySQL ก่อนเข้าสู่ระบบ");
+          return;
+        }
+        const res = await window.electronApp.mysql.authenticate(mysqlConfig, loginUsername, loginPassword);
+        if (res.ok) {
+          localStorage.setItem(SESSION_KEY, "1");
+          setIsAuthenticated(true);
+        } else {
+          setLoginError(res.error ?? "เข้าสู่ระบบไม่สำเร็จ");
+        }
+        return;
+      }
+      // ── Path B: fallback → API endpoint ──────────────────────────────────
       const res = await fetch("/api/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -178,7 +191,7 @@ export default function Home() {
         setLoginError(json.error ?? "เกิดข้อผิดพลาด");
       }
     } catch {
-      setLoginError("ไม่สามารถเชื่อมต่อ server ได้");
+      setLoginError("ไม่สามารถเชื่อมต่อได้");
     } finally {
       setLoginLoading(false);
     }
@@ -415,77 +428,30 @@ export default function Home() {
     setSaveDbStatus("loading");
     setSaveDbResult({ total: transformed.length, success: 0, error: null });
 
-    // ── Path A: direct MySQL via Electron IPC ──────────────────────────────
-    if (mysqlConnected && mysqlConfig && window.electronApp?.mysql?.insertData) {
-      try {
-        const result = await window.electronApp.mysql.insertData({
-          config: mysqlConfig,
-          headerTable: headerTable || undefined,
-          headerData: headerColDefs.length > 0 ? headerFieldValues : { doc_no: docNo, date: docDate, branch_code: branchCode },
-          detailTable: targetTable || undefined,
-          detailData: transformed,
-        });
-        if (result.ok) {
-          setSaveDbStatus("success");
-          setSaveDbResult({
-            total: transformed.length,
-            success: result.inserted ?? transformed.length,
-            error: null,
-          });
-        } else {
-          setSaveDbStatus("error");
-          setSaveDbResult({ total: transformed.length, success: 0, error: result.error ?? "เกิดข้อผิดพลาด" });
-        }
-      } catch (err: unknown) {
-        setSaveDbStatus("error");
-        setSaveDbResult({
-          total: transformed.length,
-          success: 0,
-          error: err instanceof Error ? err.message : "ไม่สามารถเชื่อมต่อได้",
-        });
-      }
+    if (!mysqlConnected || !mysqlConfig || !window.electronApp?.mysql?.insertData) {
+      setSaveDbStatus("error");
+      setSaveDbResult({ total: transformed.length, success: 0, error: "กรุณาเชื่อมต่อ MySQL ก่อนบันทึก" });
       return;
     }
 
-    // ── Path B: POST to external API endpoint ─────────────────────────────
-    if (!apiUrl.trim()) return;
-    localStorage.setItem(API_URL_KEY, apiUrl.trim());
-
     try {
-      const res = await fetch(apiUrl.trim(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          headerTable,
-          headerData: headerColDefs.length > 0 ? headerFieldValues : { doc_no: docNo, date: docDate, branch_code: branchCode },
-          detailTable: targetTable,
-          detailData: transformed,
-        }),
+      const result = await window.electronApp.mysql.insertData({
+        config: mysqlConfig,
+        headerTable: headerTable || undefined,
+        headerData: headerColDefs.length > 0 ? headerFieldValues : { doc_no: docNo, date: docDate, branch_code: branchCode },
+        detailTable: targetTable || undefined,
+        detailData: transformed,
       });
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        setSaveDbStatus("error");
-        setSaveDbResult({
-          total: transformed.length,
-          success: 0,
-          error: (errJson as Record<string, string>).message ?? (errJson as Record<string, string>).error ?? `HTTP ${res.status}`,
-        });
-      } else {
-        const json = await res.json().catch(() => ({}));
+      if (result.ok) {
         setSaveDbStatus("success");
-        setSaveDbResult({
-          total: transformed.length,
-          success: (json as Record<string, number>).inserted ?? transformed.length,
-          error: null,
-        });
+        setSaveDbResult({ total: transformed.length, success: result.inserted ?? transformed.length, error: null });
+      } else {
+        setSaveDbStatus("error");
+        setSaveDbResult({ total: transformed.length, success: 0, error: result.error ?? "เกิดข้อผิดพลาด" });
       }
     } catch (err: unknown) {
       setSaveDbStatus("error");
-      setSaveDbResult({
-        total: transformed.length,
-        success: 0,
-        error: err instanceof Error ? err.message : "ไม่สามารถเชื่อมต่อได้",
-      });
+      setSaveDbResult({ total: transformed.length, success: 0, error: err instanceof Error ? err.message : "ไม่สามารถเชื่อมต่อได้" });
     }
   };
 
@@ -615,6 +581,20 @@ export default function Home() {
                   </span>
                 ) : "เข้าสู่ระบบ"}
               </button>
+
+              {/* MySQL setup link — Electron only */}
+              {window.electronApp?.mysql && (
+                <button
+                  type="button"
+                  onClick={() => { setMysqlSaveStatus("idle"); setMysqlSaveError(""); setShowMysqlModal(true); }}
+                  className="w-full flex items-center justify-center gap-2 py-2 text-xs text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 hover:text-gray-700 transition-colors"
+                >
+                  <span className={`w-2 h-2 rounded-full flex-shrink-0 ${mysqlConfig.host && mysqlConfig.user && mysqlConfig.database ? "bg-green-400" : "bg-gray-300"}`} />
+                  {mysqlConfig.host && mysqlConfig.user && mysqlConfig.database
+                    ? `MySQL: ${mysqlConfig.database}@${mysqlConfig.host}`
+                    : "ตั้งค่า MySQL เพื่อเข้าสู่ระบบ"}
+                </button>
+              )}
             </form>
           </div>
         </div>
@@ -1088,26 +1068,16 @@ export default function Home() {
                   {saveDbStatus === "idle" && (
                     <>
                       {mysqlConnected && mysqlConfig ? (
-                        /* MySQL direct insert — no API URL needed */
                         <div className="mb-4 flex items-center gap-2 px-3 py-2.5 bg-green-50 border border-green-200 rounded-lg">
                           <span className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0" />
                           <span className="text-sm text-green-800 font-medium">
-                            บันทึกตรงสู่ MySQL ({mysqlConfig.database}@{mysqlConfig.host})
+                            {mysqlConfig.database}@{mysqlConfig.host}:{mysqlConfig.port}
                           </span>
                         </div>
                       ) : (
-                        /* API POST fallback */
-                        <div className="mb-4">
-                          <label className="block text-sm font-medium text-gray-700 mb-1">API Endpoint URL</label>
-                          <input
-                            type="text"
-                            value={apiUrl}
-                            onChange={(e) => setApiUrl(e.target.value)}
-                            placeholder="http://localhost:3001/api/import"
-                            className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-green-500"
-                            autoFocus
-                          />
-                          <p className="text-xs text-gray-400 mt-1">จะส่ง POST: <span className="font-mono">{"{ headerTable, headerData, detailTable, detailData: [...] }"}</span></p>
+                        <div className="mb-4 flex items-center gap-2 px-3 py-2.5 bg-red-50 border border-red-200 rounded-lg">
+                          <span className="w-2 h-2 rounded-full bg-red-400 flex-shrink-0" />
+                          <span className="text-sm text-red-700">กรุณาเชื่อมต่อ MySQL ก่อนบันทึก</span>
                         </div>
                       )}
 
@@ -1155,7 +1125,7 @@ export default function Home() {
                         </button>
                         <button
                           onClick={handleSaveToDb}
-                          disabled={!(mysqlConnected && mysqlConfig) && !apiUrl.trim()}
+                          disabled={!mysqlConnected}
                           className="flex items-center gap-1.5 px-5 py-2 text-sm bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           บันทึก

@@ -13,6 +13,19 @@ function getMysqlConfigPath() {
   return path.join(app.getPath("userData"), "mysql-config.json");
 }
 
+// ── MySQL connection helper ────────────────────────────────────────────────
+function makeConnOpts(config, timeout = 5000) {
+  return {
+    host: config.host || "localhost",
+    port: Number(config.port) || 3306,
+    user: config.user,
+    password: config.password,
+    database: config.database,
+    charset: "utf8mb4",
+    connectTimeout: timeout,
+  };
+}
+
 // ── MySQL IPC handlers ────────────────────────────────────────────────────
 function setupMysqlIpc() {
   ipcMain.handle("mysql:load-config", () => {
@@ -36,14 +49,7 @@ function setupMysqlIpc() {
     let conn;
     try {
       const mysql = require("mysql2/promise");
-      conn = await mysql.createConnection({
-        host: config.host || "localhost",
-        port: Number(config.port) || 3306,
-        user: config.user,
-        password: config.password,
-        database: config.database,
-        connectTimeout: 5000,
-      });
+      conn = await mysql.createConnection(makeConnOpts(config));
       await conn.ping();
       return { ok: true };
     } catch (e) {
@@ -57,14 +63,7 @@ function setupMysqlIpc() {
     let conn;
     try {
       const mysql = require("mysql2/promise");
-      conn = await mysql.createConnection({
-        host: config.host || "localhost",
-        port: Number(config.port) || 3306,
-        user: config.user,
-        password: config.password,
-        database: config.database,
-        connectTimeout: 5000,
-      });
+      conn = await mysql.createConnection(makeConnOpts(config));
       // Escape backticks in table name to prevent injection
       const safeName = table.replace(/`/g, "``");
       const [rows] = await conn.execute(`SHOW COLUMNS FROM \`${safeName}\``);
@@ -80,14 +79,7 @@ function setupMysqlIpc() {
     let conn;
     try {
       const mysql = require("mysql2/promise");
-      conn = await mysql.createConnection({
-        host: config.host || "localhost",
-        port: Number(config.port) || 3306,
-        user: config.user,
-        password: config.password,
-        database: config.database,
-        connectTimeout: 5000,
-      });
+      conn = await mysql.createConnection(makeConnOpts(config));
       const safeName = table.replace(/`/g, "``");
       const [rows] = await conn.execute(`SHOW COLUMNS FROM \`${safeName}\``);
       return {
@@ -101,20 +93,33 @@ function setupMysqlIpc() {
     }
   });
 
+  ipcMain.handle("mysql:authenticate", async (_event, { config, username, password }) => {
+    let conn;
+    try {
+      const mysql = require("mysql2/promise");
+      conn = await mysql.createConnection(makeConnOpts(config));
+      const [rows] = await conn.execute(
+        "SELECT 1 FROM `posuser` WHERE `username` = ? AND `password` = ? LIMIT 1",
+        [username, password]
+      );
+      if (Array.isArray(rows) && rows.length > 0) {
+        return { ok: true };
+      }
+      return { ok: false, error: "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง" };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    } finally {
+      if (conn) await conn.end().catch(() => {});
+    }
+  });
+
   ipcMain.handle(
     "mysql:insert-data",
     async (_event, { config, headerTable, headerData, detailTable, detailData }) => {
       let conn;
       try {
         const mysql = require("mysql2/promise");
-        conn = await mysql.createConnection({
-          host: config.host || "localhost",
-          port: Number(config.port) || 3306,
-          user: config.user,
-          password: config.password,
-          database: config.database,
-          connectTimeout: 10000,
-        });
+        conn = await mysql.createConnection(makeConnOpts(config, 10000));
 
         await conn.beginTransaction();
 
