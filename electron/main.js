@@ -4,8 +4,9 @@ const { spawn } = require("child_process");
 const http = require("http");
 const fs = require("fs");
 
-// In packaged app, isPackaged = true. In dev (electron .), isPackaged = false.
-const isDev = !app.isPackaged;
+// isPackaged = true when built by electron-builder.
+// electron:prod runs unpackaged but with NODE_ENV=production.
+const isDev = !app.isPackaged && process.env.NODE_ENV !== "production";
 const PORT = isDev ? 3000 : 3099;
 
 // ── MySQL config path ─────────────────────────────────────────────────────
@@ -209,12 +210,11 @@ function waitForServer(port, retries = 60) {
 // ── Spawn standalone Next.js server (production only) ────────────────────
 function startNextServer() {
   return new Promise((resolve, reject) => {
-    // standalone server.js is placed in resources/standalone/ by electron-builder
-    const serverScript = path.join(
-      process.resourcesPath,
-      "standalone",
-      "server.js"
-    );
+    // packaged: resources/standalone/server.js (electron-builder)
+    // unpackaged prod: .next/standalone/server.js (electron:prod)
+    const serverScript = app.isPackaged
+      ? path.join(process.resourcesPath, "standalone", "server.js")
+      : path.join(__dirname, "..", ".next", "standalone", "server.js");
 
     nextServer = spawn(process.execPath, [serverScript], {
       env: {
