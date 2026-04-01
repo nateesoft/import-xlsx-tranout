@@ -48,6 +48,13 @@
     "win": {
       "target": "nsis"
     },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": false,
+      "closeApplications": true,
+      "installerLanguages": ["th", "en"],
+      "language": "1054"
+    },
     "linux": {
       "target": "AppImage"
     }

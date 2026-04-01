@@ -310,9 +310,16 @@ app.on("window-all-closed", () => {
 });
 
 // Kill the Next.js server process when the app quits
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
   if (nextServer) {
-    nextServer.kill();
+    event.preventDefault();
+    const proc = nextServer;
     nextServer = null;
+    proc.on("exit", () => app.quit());
+    proc.kill("SIGTERM");
+    // Force kill after 3s if still alive
+    setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch {}
+    }, 3000);
   }
 });
