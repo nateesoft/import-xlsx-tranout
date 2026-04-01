@@ -46,7 +46,7 @@
       "category": "public.app-category.productivity"
     },
     "win": {
-      "target": "nsis"
+      "target": ["nsis", "portable"]
     },
     "nsis": {
       "oneClick": false,
