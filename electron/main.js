@@ -182,11 +182,11 @@ setupMysqlIpc();
 let mainWindow = null;
 let nextServer = null;
 
-// ── Poll until Next.js server responds ────────────────────────────────────
-function waitForServer(port, retries = 60) {
+// ── Poll until Next.js server responds (max ~60s on slow machines) ────────
+function waitForServer(port, retries = 120) {
   return new Promise((resolve, reject) => {
     const attempt = () => {
-      const req = http.get(`http://localhost:${port}`, (res) => {
+      const req = http.get(`http://127.0.0.1:${port}`, (res) => {
         res.resume();
         resolve();
       });
@@ -194,12 +194,12 @@ function waitForServer(port, retries = 60) {
         if (retries-- > 0) {
           setTimeout(attempt, 500);
         } else {
-          reject(new Error(`Server on port ${port} did not start`));
+          reject(new Error(`Server on port ${port} did not start within 60s`));
         }
       });
-      req.setTimeout(400, () => {
+      req.setTimeout(800, () => {
         req.destroy();
-        if (retries-- > 0) setTimeout(attempt, 300);
+        if (retries-- > 0) setTimeout(attempt, 500);
         else reject(new Error("Timeout waiting for server"));
       });
     };
@@ -243,37 +243,33 @@ function startNextServer() {
     });
 
     nextServer.on("error", reject);
-
-    // Fallback resolve after 5 s to unblock window creation
-    setTimeout(resolve, 5000);
   });
 }
 
-// ── Create the main window ────────────────────────────────────────────────
+// ── Create the main window (shows loading screen immediately) ─────────────
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 960,
     minHeight: 640,
-    show: false, // show after ready-to-show to avoid white flash
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, "preload.js"),
     },
     title: "Import Excel / Menu Items",
-    // macOS traffic-light buttons
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    backgroundColor: "#0f172a",
   });
 
-  mainWindow.loadURL(`http://localhost:${PORT}`);
+  // Show loading screen right away — user sees something immediately
+  mainWindow.loadFile(path.join(__dirname, "loading.html"));
+  mainWindow.show();
 
-  // Show window once content is ready (no white flash)
-  mainWindow.once("ready-to-show", () => {
-    mainWindow.show();
-    if (isDev) mainWindow.webContents.openDevTools();
-  });
+  if (isDev) {
+    mainWindow.webContents.openDevTools();
+  }
 
   // Open external links in the system browser, not in Electron
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -288,16 +284,31 @@ function createWindow() {
 
 // ── App lifecycle ─────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
-  if (!isDev) {
-    console.log("Starting Next.js standalone server...");
-    await startNextServer();
-    // Poll to confirm server is actually accepting connections
-    await waitForServer(PORT).catch((err) =>
-      console.warn("Server wait timeout:", err.message)
-    );
-  }
-
+  // Open window with loading screen first — no blank wait
   createWindow();
+
+  if (!isDev) {
+    try {
+      console.log("Starting Next.js standalone server...");
+      await startNextServer();
+      await waitForServer(PORT);
+      // Navigate to the app now that the server is confirmed ready
+      if (mainWindow) {
+        mainWindow.loadURL(`http://localhost:${PORT}`);
+      }
+    } catch (err) {
+      console.error("Failed to start server:", err.message);
+      const { dialog } = require("electron");
+      dialog.showErrorBox(
+        "ไม่สามารถเริ่มต้นแอปพลิเคชัน",
+        err.message + "\n\nกรุณาลองเปิดใหม่อีกครั้ง"
+      );
+      app.quit();
+    }
+  } else {
+    // Dev: Next.js already running, go straight to the URL
+    if (mainWindow) mainWindow.loadURL(`http://localhost:${PORT}`);
+  }
 
   // macOS: re-create window when dock icon is clicked and no windows are open
   app.on("activate", () => {
