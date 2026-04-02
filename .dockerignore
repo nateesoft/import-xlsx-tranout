@@ -1,0 +1,7 @@
+.git
+.next
+node_modules
+dist-electron
+.env.local
+.env*.local
+README.md

@@ -219,6 +219,7 @@ function startNextServer() {
     nextServer = spawn(process.execPath, [serverScript], {
       env: {
         ...process.env,
+        ELECTRON_RUN_AS_NODE: "1",
         PORT: String(PORT),
         NODE_ENV: "production",
         // Env vars for auth — can be overridden by system env
