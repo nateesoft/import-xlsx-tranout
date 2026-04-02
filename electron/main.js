@@ -231,18 +231,21 @@ function startNextServer() {
     });
 
     nextServer.stdout.on("data", (data) => {
-      const msg = data.toString();
-      console.log("[Next.js]", msg.trim());
-      if (msg.includes("Ready") || msg.includes("started server")) {
+      console.log("[Next.js]", data.toString().trim());
+    });
+
+    nextServer.stderr.on("data", (data) => {
+      const msg = data.toString().trim();
+      console.log("[Next.js]", msg);
+      if (msg.toLowerCase().includes("ready") || msg.includes("started server")) {
         resolve();
       }
     });
 
-    nextServer.stderr.on("data", (data) => {
-      console.error("[Next.js stderr]", data.toString().trim());
-    });
-
     nextServer.on("error", reject);
+
+    // Fallback: resolve after 3s even if we never see "Ready" message
+    setTimeout(resolve, 3000);
   });
 }
 
