@@ -15,29 +15,6 @@ type MySqlConfig = {
 
 type ColDef = { name: string; type: string };
 
-declare global {
-  interface Window {
-    electronApp?: {
-      platform: string;
-      mysql?: {
-        loadConfig: () => Promise<MySqlConfig | null>;
-        saveConfig: (config: MySqlConfig) => Promise<{ ok: boolean; error?: string }>;
-        testConnection: (config: MySqlConfig) => Promise<{ ok: boolean; error?: string }>;
-        getColumns: (config: MySqlConfig, table: string) => Promise<{ ok: boolean; columns?: string[]; error?: string }>;
-        getColumnDefs: (config: MySqlConfig, table: string) => Promise<{ ok: boolean; columns?: ColDef[]; error?: string }>;
-        authenticate: (config: MySqlConfig, username: string, password: string) => Promise<{ ok: boolean; error?: string }>;
-        insertData: (payload: {
-          config: MySqlConfig;
-          headerTable?: string;
-          headerData?: Record<string, string>;
-          detailTable?: string;
-          detailData?: RowData[];
-        }) => Promise<{ ok: boolean; inserted?: number; error?: string }>;
-      };
-    };
-  }
-}
-
 function mysqlTypeToInputType(mysqlType: string): "text" | "number" | "date" | "datetime-local" | "time" {
   const t = mysqlType.toLowerCase();
   if (/^(int|tinyint|smallint|mediumint|bigint|float|double|decimal|numeric)/.test(t)) return "number";
@@ -151,10 +128,11 @@ export default function Home() {
       const tpls = localStorage.getItem(TEMPLATES_KEY);
       if (tpls) setTemplates(JSON.parse(tpls));
     } catch {}
-    // Load MySQL config from Electron userData
-    window.electronApp?.mysql?.loadConfig().then((cfg) => {
-      if (cfg) setMysqlConfig(cfg);
-    });
+    // Load MySQL config from server
+    fetch("/api/mysql/load-config")
+      .then((r) => r.json())
+      .then((cfg) => { if (cfg) setMysqlConfig(cfg); })
+      .catch(() => {});
   }, []);
 
   const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -162,22 +140,23 @@ export default function Home() {
     setLoginError("");
     setLoginLoading(true);
     try {
-      // ── Path A: MySQL via Electron IPC (ใช้เมื่อมี config ครบ) ──────────
-      if (window.electronApp?.mysql?.authenticate) {
-        if (!mysqlConfig.host || !mysqlConfig.user || !mysqlConfig.database) {
-          setLoginError("กรุณาตั้งค่า MySQL ก่อนเข้าสู่ระบบ");
-          return;
-        }
-        const res = await window.electronApp.mysql.authenticate(mysqlConfig, loginUsername, loginPassword);
-        if (res.ok) {
+      if (mysqlConfig.host && mysqlConfig.user && mysqlConfig.database) {
+        // ── MySQL authentication ──────────────────────────────────────────
+        const res = await fetch("/api/mysql/authenticate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config: mysqlConfig, username: loginUsername, password: loginPassword }),
+        });
+        const json = await res.json();
+        if (json.ok) {
           localStorage.setItem(SESSION_KEY, "1");
           setIsAuthenticated(true);
         } else {
-          setLoginError(res.error ?? "เข้าสู่ระบบไม่สำเร็จ");
+          setLoginError(json.error ?? "เข้าสู่ระบบไม่สำเร็จ");
         }
         return;
       }
-      // ── Path B: fallback → API endpoint ──────────────────────────────────
+      // ── fallback → env-based auth ─────────────────────────────────────
       const res = await fetch("/api/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -207,58 +186,86 @@ export default function Home() {
 
   // ── MySQL handlers ─────────────────────────────────────────────────────────
   const handleMysqlConnect = async () => {
-    const electron = window.electronApp;
-    if (!electron?.mysql) return;
     setMysqlSaveStatus("testing");
     setMysqlSaveError("");
-    const res = await electron.mysql.testConnection(mysqlConfig);
-    if (res.ok) {
-      await electron.mysql.saveConfig(mysqlConfig);
-      setMysqlConnected(true);
-      setMysqlSaveStatus("ok");
-      setTimeout(() => { setShowMysqlModal(false); setMysqlSaveStatus("idle"); }, 800);
-    } else {
+    try {
+      const testRes = await fetch("/api/mysql/test-connection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(mysqlConfig),
+      });
+      const res = await testRes.json();
+      if (res.ok) {
+        await fetch("/api/mysql/save-config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(mysqlConfig),
+        });
+        setMysqlConnected(true);
+        setMysqlSaveStatus("ok");
+        setTimeout(() => { setShowMysqlModal(false); setMysqlSaveStatus("idle"); }, 800);
+      } else {
+        setMysqlSaveStatus("error");
+        setMysqlSaveError(res.error ?? "เชื่อมต่อไม่สำเร็จ");
+      }
+    } catch {
       setMysqlSaveStatus("error");
-      setMysqlSaveError(res.error ?? "เชื่อมต่อไม่สำเร็จ");
+      setMysqlSaveError("ไม่สามารถเชื่อมต่อได้");
     }
   };
 
   const handleLoadColumnsFromDb = async () => {
     const trimmed = targetTable.trim();
     if (!trimmed) return;
-    const electron = window.electronApp;
-    if (!electron?.mysql) return;
     setLoadColStatus("loading");
     setLoadColError("");
-    const res = await electron.mysql.getColumns(mysqlConfig, trimmed);
-    if (res.ok && res.columns) {
-      setDbColumns(res.columns);
-      setMappings({});
-      setFixedValues({});
-      setLoadColStatus("idle");
-    } else {
+    try {
+      const r = await fetch("/api/mysql/get-columns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: mysqlConfig, table: trimmed }),
+      });
+      const res = await r.json();
+      if (res.ok && res.columns) {
+        setDbColumns(res.columns);
+        setMappings({});
+        setFixedValues({});
+        setLoadColStatus("idle");
+      } else {
+        setLoadColStatus("error");
+        setLoadColError(res.error ?? "โหลดไม่สำเร็จ");
+      }
+    } catch {
       setLoadColStatus("error");
-      setLoadColError(res.error ?? "โหลดไม่สำเร็จ");
+      setLoadColError("ไม่สามารถเชื่อมต่อได้");
     }
   };
 
   const handleLoadHeaderColumnsFromDb = async () => {
     const trimmed = headerTable.trim();
     if (!trimmed) return;
-    const electron = window.electronApp;
-    if (!electron?.mysql) return;
     setHeaderColStatus("loading");
     setHeaderColError("");
-    const res = await electron.mysql.getColumnDefs(mysqlConfig, trimmed);
-    if (res.ok && res.columns) {
-      setHeaderColDefs(res.columns);
-      const init: Record<string, string> = {};
-      res.columns.forEach((c) => { init[c.name] = ""; });
-      setHeaderFieldValues(init);
-      setHeaderColStatus("idle");
-    } else {
+    try {
+      const r = await fetch("/api/mysql/get-column-defs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: mysqlConfig, table: trimmed }),
+      });
+      const res = await r.json();
+      if (res.ok && res.columns) {
+        setHeaderColDefs(res.columns);
+        const init: Record<string, string> = {};
+        res.columns.forEach((c: ColDef) => { init[c.name] = ""; });
+        setHeaderFieldValues(init);
+        setHeaderColStatus("idle");
+      } else {
+        setHeaderColStatus("error");
+        setHeaderColError(res.error ?? "โหลดไม่สำเร็จ");
+      }
+    } catch {
       setHeaderColStatus("error");
-      setHeaderColError(res.error ?? "โหลดไม่สำเร็จ");
+      setHeaderColError("ไม่สามารถเชื่อมต่อได้");
     }
   };
 
@@ -428,20 +435,25 @@ export default function Home() {
     setSaveDbStatus("loading");
     setSaveDbResult({ total: transformed.length, success: 0, error: null });
 
-    if (!mysqlConnected || !mysqlConfig || !window.electronApp?.mysql?.insertData) {
+    if (!mysqlConnected || !mysqlConfig) {
       setSaveDbStatus("error");
       setSaveDbResult({ total: transformed.length, success: 0, error: "กรุณาเชื่อมต่อ MySQL ก่อนบันทึก" });
       return;
     }
 
     try {
-      const result = await window.electronApp.mysql.insertData({
-        config: mysqlConfig,
-        headerTable: headerTable || undefined,
-        headerData: headerColDefs.length > 0 ? headerFieldValues : { doc_no: docNo, date: docDate, branch_code: branchCode },
-        detailTable: targetTable || undefined,
-        detailData: transformed,
+      const r = await fetch("/api/mysql/insert-data", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          config: mysqlConfig,
+          headerTable: headerTable || undefined,
+          headerData: headerColDefs.length > 0 ? headerFieldValues : { doc_no: docNo, date: docDate, branch_code: branchCode },
+          detailTable: targetTable || undefined,
+          detailData: transformed,
+        }),
       });
+      const result = await r.json();
       if (result.ok) {
         setSaveDbStatus("success");
         setSaveDbResult({ total: transformed.length, success: result.inserted ?? transformed.length, error: null });
@@ -582,19 +594,17 @@ export default function Home() {
                 ) : "เข้าสู่ระบบ"}
               </button>
 
-              {/* MySQL setup link — Electron only */}
-              {window.electronApp?.mysql && (
-                <button
-                  type="button"
-                  onClick={() => { setMysqlSaveStatus("idle"); setMysqlSaveError(""); setShowMysqlModal(true); }}
-                  className="w-full flex items-center justify-center gap-2 py-2 text-xs text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 hover:text-gray-700 transition-colors"
-                >
-                  <span className={`w-2 h-2 rounded-full flex-shrink-0 ${mysqlConfig.host && mysqlConfig.user && mysqlConfig.database ? "bg-green-400" : "bg-gray-300"}`} />
-                  {mysqlConfig.host && mysqlConfig.user && mysqlConfig.database
-                    ? `MySQL: ${mysqlConfig.database}@${mysqlConfig.host}`
-                    : "ตั้งค่า MySQL เพื่อเข้าสู่ระบบ"}
-                </button>
-              )}
+              {/* MySQL setup link */}
+              <button
+                type="button"
+                onClick={() => { setMysqlSaveStatus("idle"); setMysqlSaveError(""); setShowMysqlModal(true); }}
+                className="w-full flex items-center justify-center gap-2 py-2 text-xs text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 hover:text-gray-700 transition-colors"
+              >
+                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${mysqlConfig.host && mysqlConfig.user && mysqlConfig.database ? "bg-green-400" : "bg-gray-300"}`} />
+                {mysqlConfig.host && mysqlConfig.user && mysqlConfig.database
+                  ? `MySQL: ${mysqlConfig.database}@${mysqlConfig.host}`
+                  : "ตั้งค่า MySQL เพื่อเข้าสู่ระบบ"}
+              </button>
             </form>
           </div>
         </div>
@@ -766,20 +776,18 @@ export default function Home() {
           {isAuthenticated && (
             <div className="app-no-drag flex items-center gap-2">
               {/* MySQL connection button */}
-              {window.electronApp?.mysql && (
-                <button
-                  onClick={() => { setMysqlSaveStatus("idle"); setMysqlSaveError(""); setShowMysqlModal(true); }}
-                  className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
-                  title="MySQL Connection"
-                >
-                  <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                      d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582 4 8 4" />
-                  </svg>
-                  <span className="text-gray-600">MySQL</span>
-                  <span className={`w-2 h-2 rounded-full ${mysqlConnected ? "bg-green-500" : "bg-gray-300"}`} />
-                </button>
-              )}
+              <button
+                onClick={() => { setMysqlSaveStatus("idle"); setMysqlSaveError(""); setShowMysqlModal(true); }}
+                className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+                title="MySQL Connection"
+              >
+                <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582 4 8 4" />
+                </svg>
+                <span className="text-gray-600">MySQL</span>
+                <span className={`w-2 h-2 rounded-full ${mysqlConnected ? "bg-green-500" : "bg-gray-300"}`} />
+              </button>
               <button onClick={handleLogout}
                 className="flex items-center gap-2 px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1365,26 +1373,24 @@ export default function Home() {
                       placeholder="header_table"
                       className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-amber-400 w-40"
                     />
-                    {window.electronApp?.mysql && (
-                      <button
-                        onClick={handleLoadHeaderColumnsFromDb}
-                        disabled={!headerTable.trim() || headerColStatus === "loading"}
-                        title={mysqlConnected ? "โหลด columns จาก MySQL" : "กรุณาเชื่อมต่อ MySQL ก่อน"}
-                        className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                      >
-                        {headerColStatus === "loading" ? (
-                          <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                          </svg>
-                        ) : (
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                          </svg>
-                        )}
-                        โหลด
-                      </button>
-                    )}
+                    <button
+                      onClick={handleLoadHeaderColumnsFromDb}
+                      disabled={!headerTable.trim() || headerColStatus === "loading"}
+                      title={mysqlConnected ? "โหลด columns จาก MySQL" : "กรุณาเชื่อมต่อ MySQL ก่อน"}
+                      className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {headerColStatus === "loading" ? (
+                        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                      ) : (
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                      )}
+                      โหลด
+                    </button>
                   </div>
                   {/* Error */}
                   {headerColStatus === "error" && (
@@ -1550,33 +1556,31 @@ export default function Home() {
                         placeholder="table_name"
                         className="border border-gray-300 rounded-lg px-3 py-1 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 w-44"
                       />
-                      {/* Load from MySQL button — only visible when Electron + mysql is available */}
-                      {window.electronApp?.mysql && (
-                        <button
-                          onClick={handleLoadColumnsFromDb}
-                          disabled={!targetTable.trim() || loadColStatus === "loading"}
-                          className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                          title={mysqlConnected ? "โหลด columns จาก MySQL" : "กรุณาเชื่อมต่อ MySQL ก่อน"}
-                        >
-                          {loadColStatus === "loading" ? (
-                            <>
-                              <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                              </svg>
-                              กำลังโหลด...
-                            </>
-                          ) : (
-                            <>
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                  d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582 4 8 4" />
-                              </svg>
-                              โหลด Columns จาก DB
-                            </>
-                          )}
-                        </button>
-                      )}
+                      {/* Load from MySQL button */}
+                      <button
+                        onClick={handleLoadColumnsFromDb}
+                        disabled={!targetTable.trim() || loadColStatus === "loading"}
+                        className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        title={mysqlConnected ? "โหลด columns จาก MySQL" : "กรุณาเชื่อมต่อ MySQL ก่อน"}
+                      >
+                        {loadColStatus === "loading" ? (
+                          <>
+                            <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                            </svg>
+                            กำลังโหลด...
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582 4 8 4" />
+                            </svg>
+                            โหลด Columns จาก DB
+                          </>
+                        )}
+                      </button>
                       {loadColStatus === "error" && (
                         <span className="text-xs text-red-500">{loadColError}</span>
                       )}
