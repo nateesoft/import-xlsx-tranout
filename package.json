@@ -9,8 +9,8 @@
     "start": "next start",
     "lint": "eslint",
     "electron:dev": "concurrently -k -n \"Next,Electron\" -c \"blue,green\" \"next dev\" \"wait-on http://localhost:3000 && env -u ELECTRON_RUN_AS_NODE cross-env NODE_ENV=development electron .\"",
-    "electron:prod": "next build && node scripts/copy-standalone.js && env -u ELECTRON_RUN_AS_NODE cross-env NODE_ENV=production electron .",
-    "dist:win": "next build && node scripts/copy-standalone.js && electron-builder --win --x64"
+    "electron:prod": "next build && env -u ELECTRON_RUN_AS_NODE cross-env NODE_ENV=production electron .",
+    "dist:win": "next build && electron-builder --win --x64"
   },
   "build": {
     "appId": "com.nateesoft.import-xlsx-tranout",
@@ -25,8 +25,8 @@
     ],
     "extraResources": [
       {
-        "from": ".next/standalone",
-        "to": "standalone",
+        "from": "out",
+        "to": "out",
         "filter": [
           "**/*"
         ]

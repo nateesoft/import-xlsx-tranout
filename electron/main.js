@@ -1,13 +1,20 @@
-const { app, BrowserWindow, shell, ipcMain } = require("electron");
+const { app, BrowserWindow, shell, ipcMain, protocol, net } = require("electron");
 const path = require("path");
-const { spawn } = require("child_process");
-const http = require("http");
 const fs = require("fs");
 
 // isPackaged = true when built by electron-builder.
 // electron:prod runs unpackaged but with NODE_ENV=production.
 const isDev = !app.isPackaged && process.env.NODE_ENV !== "production";
-const PORT = isDev ? 3000 : 3099;
+
+// Static export directory (Next.js outputs to out/)
+const staticDir = app.isPackaged
+  ? path.join(process.resourcesPath, "out")
+  : path.join(__dirname, "..", "out");
+
+// Must be called before app is ready
+protocol.registerSchemesAsPrivileged([
+  { scheme: "app", privileges: { secure: true, standard: true } },
+]);
 
 // ── MySQL config path ─────────────────────────────────────────────────────
 function getMysqlConfigPath() {
@@ -180,76 +187,8 @@ function setupMysqlIpc() {
 setupMysqlIpc();
 
 let mainWindow = null;
-let nextServer = null;
 
-// ── Poll until Next.js server responds (max ~60s on slow machines) ────────
-function waitForServer(port, retries = 120) {
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      const req = http.get(`http://127.0.0.1:${port}`, (res) => {
-        res.resume();
-        resolve();
-      });
-      req.on("error", () => {
-        if (retries-- > 0) {
-          setTimeout(attempt, 500);
-        } else {
-          reject(new Error(`Server on port ${port} did not start within 60s`));
-        }
-      });
-      req.setTimeout(800, () => {
-        req.destroy();
-        if (retries-- > 0) setTimeout(attempt, 500);
-        else reject(new Error("Timeout waiting for server"));
-      });
-    };
-    attempt();
-  });
-}
-
-// ── Spawn standalone Next.js server (production only) ────────────────────
-function startNextServer() {
-  return new Promise((resolve, reject) => {
-    // packaged: resources/standalone/server.js (electron-builder)
-    // unpackaged prod: .next/standalone/server.js (electron:prod)
-    const serverScript = app.isPackaged
-      ? path.join(process.resourcesPath, "standalone", "server.js")
-      : path.join(__dirname, "..", ".next", "standalone", "server.js");
-
-    nextServer = spawn(process.execPath, [serverScript], {
-      env: {
-        ...process.env,
-        ELECTRON_RUN_AS_NODE: "1",
-        PORT: String(PORT),
-        NODE_ENV: "production",
-        // Env vars for auth — can be overridden by system env
-        LOGIN_USERNAME: process.env.LOGIN_USERNAME || "admin",
-        LOGIN_PASSWORD: process.env.LOGIN_PASSWORD || "1234",
-        HOSTNAME: "127.0.0.1",
-      },
-      stdio: "pipe",
-    });
-
-    nextServer.stdout.on("data", (data) => {
-      console.log("[Next.js]", data.toString().trim());
-    });
-
-    nextServer.stderr.on("data", (data) => {
-      const msg = data.toString().trim();
-      console.log("[Next.js]", msg);
-      if (msg.toLowerCase().includes("ready") || msg.includes("started server")) {
-        resolve();
-      }
-    });
-
-    nextServer.on("error", reject);
-
-    // Fallback: resolve after 3s even if we never see "Ready" message
-    setTimeout(resolve, 3000);
-  });
-}
-
-// ── Create the main window (shows loading screen immediately) ─────────────
+// ── Create the main window ────────────────────────────────────────────────
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -266,12 +205,11 @@ function createWindow() {
     backgroundColor: "#0f172a",
   });
 
-  // Show loading screen right away — user sees something immediately
-  mainWindow.loadFile(path.join(__dirname, "loading.html"));
-  mainWindow.show();
-
   if (isDev) {
     mainWindow.webContents.openDevTools();
+    mainWindow.loadURL("http://localhost:3000");
+  } else {
+    mainWindow.loadURL("app://index.html");
   }
 
   // Open external links in the system browser, not in Electron
@@ -286,32 +224,19 @@ function createWindow() {
 }
 
 // ── App lifecycle ─────────────────────────────────────────────────────────
-app.whenReady().then(async () => {
-  // Open window with loading screen first — no blank wait
-  createWindow();
-
+app.whenReady().then(() => {
+  // Serve static Next.js export via custom app:// protocol
   if (!isDev) {
-    try {
-      console.log("Starting Next.js standalone server...");
-      await startNextServer();
-      await waitForServer(PORT);
-      // Navigate to the app now that the server is confirmed ready
-      if (mainWindow) {
-        mainWindow.loadURL(`http://localhost:${PORT}`);
-      }
-    } catch (err) {
-      console.error("Failed to start server:", err.message);
-      const { dialog } = require("electron");
-      dialog.showErrorBox(
-        "ไม่สามารถเริ่มต้นแอปพลิเคชัน",
-        err.message + "\n\nกรุณาลองเปิดใหม่อีกครั้ง"
-      );
-      app.quit();
-    }
-  } else {
-    // Dev: Next.js already running, go straight to the URL
-    if (mainWindow) mainWindow.loadURL(`http://localhost:${PORT}`);
+    protocol.handle("app", (request) => {
+      let filePath = request.url.slice("app://".length);
+      filePath = filePath.split("?")[0].split("#")[0];
+      if (!filePath || filePath === "/") filePath = "index.html";
+      if (filePath.startsWith("/")) filePath = filePath.slice(1);
+      return net.fetch(`file://${path.join(staticDir, filePath)}`);
+    });
   }
+
+  createWindow();
 
   // macOS: re-create window when dock icon is clicked and no windows are open
   app.on("activate", () => {
@@ -322,19 +247,4 @@ app.whenReady().then(async () => {
 // Quit when all windows are closed (except on macOS)
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
-});
-
-// Kill the Next.js server process when the app quits
-app.on("before-quit", (event) => {
-  if (nextServer) {
-    event.preventDefault();
-    const proc = nextServer;
-    nextServer = null;
-    proc.on("exit", () => app.quit());
-    proc.kill("SIGTERM");
-    // Force kill after 3s if still alive
-    setTimeout(() => {
-      try { proc.kill("SIGKILL"); } catch {}
-    }, 3000);
-  }
 });
