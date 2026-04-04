@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "install:windows": "powershell -ExecutionPolicy RemoteSigned -File scripts\\install-windows.ps1"
   },
   "dependencies": {
     "mysql2": "^3.17.4",
