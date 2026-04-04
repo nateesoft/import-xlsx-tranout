@@ -2,60 +2,11 @@
   "name": "import-xlsx-tranout",
   "version": "0.1.0",
   "private": true,
-  "main": "electron/main.js",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
-    "electron:dev": "concurrently -k -n \"Next,Electron\" -c \"blue,green\" \"next dev\" \"wait-on http://localhost:3000 && env -u ELECTRON_RUN_AS_NODE cross-env NODE_ENV=development electron .\"",
-    "electron:prod": "next build && env -u ELECTRON_RUN_AS_NODE cross-env NODE_ENV=production electron .",
-    "dist:win": "next build && electron-builder --win --x64"
-  },
-  "build": {
-    "appId": "com.nateesoft.import-xlsx-tranout",
-    "productName": "Import Excel Menu Items",
-    "directories": {
-      "output": "dist-electron"
-    },
-    "files": [
-      "electron/**/*",
-      "node_modules/**/*",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "out",
-        "to": "out",
-        "filter": [
-          "**/*"
-        ]
-      }
-    ],
-    "mac": {
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ],
-      "category": "public.app-category.productivity"
-    },
-    "win": {
-      "target": ["nsis", "portable"]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": false,
-      "installerLanguages": ["th", "en"],
-      "language": "1054"
-    },
-    "linux": {
-      "target": "AppImage"
-    }
+    "lint": "eslint"
   },
   "dependencies": {
     "mysql2": "^3.17.4",
@@ -69,14 +20,9 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "concurrently": "^9.2.1",
-    "cross-env": "^10.1.0",
-    "electron": "^33.4.11",
-    "electron-builder": "^26.8.1",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",
-    "typescript": "^5",
-    "wait-on": "^9.0.4"
+    "typescript": "^5"
   }
 }
