@@ -129,7 +129,7 @@ echo       Build complete.
 echo.
 echo Starting app with PM2...
 call pm2 delete %APP_NAME% 2>nul
-call pm2 start npm --name "%APP_NAME%" -- start
+call pm2 start node --name "%APP_NAME%" -- node_modules/next/dist/bin/next start
 call pm2 save
 
 :: -------------------------------------------
