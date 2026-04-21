@@ -11,7 +11,7 @@ setlocal enabledelayedexpansion
 :: =============================================================
 
 set REPO_URL=https://github.com/nateesoft/import-xlsx-tranout.git
-set APP_DIR=C:\Apps\import-xlsx-tranout
+set APP_DIR=%~dp0import-xlsx-tranout
 set APP_NAME=import-xlsx
 
 echo.
@@ -48,17 +48,41 @@ if %ERRORLEVEL% neq 0 (
 for /f "tokens=*" %%v in ('git --version') do echo       %%v found
 
 :: -------------------------------------------
-:: Install PM2
+:: Install PM2 (check latest version first)
 :: -------------------------------------------
 echo.
-echo [3/5] Installing PM2 globally...
-call npm install -g pm2
-if %ERRORLEVEL% neq 0 (
-    echo [ERROR] Failed to install PM2
-    pause
-    exit /b 1
+echo [3/5] Checking PM2...
+
+:: Get latest PM2 version from npm registry
+for /f "tokens=*" %%v in ('npm show pm2 version 2^>nul') do set PM2_LATEST=%%v
+
+:: Check if PM2 is already installed
+pm2 --version >nul 2>&1
+if %ERRORLEVEL% equ 0 (
+    for /f "tokens=*" %%v in ('pm2 --version 2^>nul') do set PM2_CURRENT=%%v
+    echo       PM2 current : v!PM2_CURRENT!
+    echo       PM2 latest  : v%PM2_LATEST%
+    if "!PM2_CURRENT!"=="%PM2_LATEST%" (
+        echo       PM2 is already up to date. Skipping install.
+    ) else (
+        echo       Updating PM2 to latest version...
+        call npm install -g pm2@latest
+        if %ERRORLEVEL% neq 0 (
+            echo [WARN] PM2 update failed, using existing version.
+        ) else (
+            echo       PM2 updated to v%PM2_LATEST%.
+        )
+    )
+) else (
+    echo       PM2 not found. Installing latest ^(v%PM2_LATEST%^)...
+    call npm install -g pm2@latest
+    if %ERRORLEVEL% neq 0 (
+        echo [ERROR] Failed to install PM2
+        pause
+        exit /b 1
+    )
+    echo       PM2 v%PM2_LATEST% installed.
 )
-echo       PM2 installed.
 
 :: -------------------------------------------
 :: Clone or update project
@@ -80,23 +104,16 @@ if exist "%APP_DIR%" (
 echo       Project ready at %APP_DIR%
 
 :: -------------------------------------------
-:: Create .env.production.local
+:: Create .env.production.local (use defaults, skip prompt)
 :: -------------------------------------------
 if not exist "%APP_DIR%\.env.production.local" (
-    echo.
-    echo       Set login credentials (press Enter to use defaults^):
-    set /p LOGIN_USER="       LOGIN_USERNAME [admin]: "
-    set /p LOGIN_PASS="       LOGIN_PASSWORD [1234]: "
-
-    if "!LOGIN_USER!"=="" set LOGIN_USER=admin
-    if "!LOGIN_PASS!"=="" set LOGIN_PASS=1234
-
     (
-        echo LOGIN_USERNAME=!LOGIN_USER!
-        echo LOGIN_PASSWORD=!LOGIN_PASS!
+        echo LOGIN_USERNAME=admin
+        echo LOGIN_PASSWORD=1234
         echo PORT=3000
     ) > "%APP_DIR%\.env.production.local"
-    echo       .env.production.local created.
+    echo       .env.production.local created with default credentials.
+    echo       [admin / 1234] - edit %APP_DIR%\.env.production.local to change.
 ) else (
     echo       .env.production.local already exists, skipping.
 )

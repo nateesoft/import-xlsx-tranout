@@ -4,7 +4,20 @@
       "Bash(npm install:*)",
       "Bash(npx tsc:*)",
       "Bash(npm run:*)",
-      "Bash(git remote:*)"
+      "Bash(git remote:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(node -e \":*)",
+      "Bash(node_modules/.bin/electron --version)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d[''''version'''']\\)\")",
+      "Bash(./node_modules/.bin/electron --version)",
+      "Bash(/tmp/test_electron2.js:*)",
+      "Bash(./node_modules/.bin/electron /tmp/test_electron2.js)",
+      "Bash(node -e \"const p=require\\(''child_process''\\); const r=p.execSync\\(''which electron''\\).toString\\(\\).trim\\(\\); console.log\\(r\\)\")",
+      "Bash(/Users/nateelive/Documents/Projects/GithubProject/software-utility/test_debug.js:*)",
+      "Bash(./node_modules/.bin/electron test_debug.js)",
+      "Bash(node_modules/electron/dist/Electron.app/Contents/MacOS/Electron test_debug.js)",
+      "Bash(ELECTRON_RUN_AS_NODE=0 node_modules/electron/dist/Electron.app/Contents/MacOS/Electron test_debug.js)",
+      "Bash(grep -E \"\\\\.\\(ts|tsx|js|json\\)$\")"
     ]
   }
 }
