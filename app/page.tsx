@@ -24,11 +24,34 @@ import TemplatePanel from "./components/TemplatePanel";
 import HeaderTableCard from "./components/HeaderTableCard";
 import ExcelColumnPanel, { INDEX_COL } from "./components/ExcelColumnPanel";
 import DbColumnPanel from "./components/DbColumnPanel";
+import SelectTablesModal from "./components/SelectTablesModal";
 
 const SESSION_KEY = "xlsx_importer_auth";
+const USER_KEY = "xlsx_current_user";
 const TEMPLATES_KEY = "xlsx_mapping_templates";
 const COL_LABELS_KEY = "xlsx_header_col_labels";
+const DETAIL_LABELS_KEY = "xlsx_detail_col_labels";
+const REQUIRED_COLS_KEY = "xlsx_detail_required_cols";
 const ROWS_PER_PAGE = 20;
+
+function resolveFormulas(
+  values: Record<string, string>,
+  detailRows: RowData[],
+  currentUser: string
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [col, val] of Object.entries(values)) {
+    result[col] = val.replace(/\{sum\((\w+)\)\}|\{username\}/gi, (match, colName) => {
+      if (match.toLowerCase() === "{username}") return currentUser;
+      const sum = detailRows.reduce((acc, row) => {
+        const v = Number(row[colName]);
+        return acc + (isNaN(v) ? 0 : v);
+      }, 0);
+      return parseFloat(sum.toFixed(10)).toString();
+    });
+  }
+  return result;
+}
 
 export default function Home() {
   // ── Auth ──────────────────────────────────────────────────────────────────
@@ -36,6 +59,7 @@ export default function Home() {
   const [authChecked, setAuthChecked] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
+  const [currentUser, setCurrentUser] = useState("");
 
   // ── Data ──────────────────────────────────────────────────────────────────
   const [data, setData] = useState<RowData[]>([]);
@@ -63,12 +87,16 @@ export default function Home() {
   const [draggedExcelCol, setDraggedExcelCol] = useState<string | null>(null);
   const [dropOverCol, setDropOverCol] = useState<string | null>(null);
   const [fixedValues, setFixedValues] = useState<Record<string, string>>({});
+  const [mappingChanged, setMappingChanged] = useState(false);
 
   // ── Templates ─────────────────────────────────────────────────────────────
   const [templates, setTemplates] = useState<MappingTemplate[]>([]);
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [templateName, setTemplateName] = useState("");
   const [showTemplatePanel, setShowTemplatePanel] = useState(false);
+
+  // ── Select Tables Modal ───────────────────────────────────────────────────
+  const [showSelectTablesModal, setShowSelectTablesModal] = useState(false);
 
   // ── Save to DB ────────────────────────────────────────────────────────────
   const [showSaveDbModal, setShowSaveDbModal] = useState(false);
@@ -89,6 +117,8 @@ export default function Home() {
   const [headerColError, setHeaderColError] = useState("");
   // colName → display label (per table, persisted in localStorage)
   const [headerColLabels, setHeaderColLabels] = useState<Record<string, string>>({});
+  const [dbColLabels, setDbColLabels] = useState<Record<string, string>>({});
+  const [requiredCols, setRequiredCols] = useState<Set<string>>(new Set());
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const resizeRef = useRef<{ col: string; startX: number; startWidth: number } | null>(null);
@@ -96,7 +126,10 @@ export default function Home() {
   // ── Session + templates on mount ─────────────────────────────────────────
   useEffect(() => {
     const stored = localStorage.getItem(SESSION_KEY);
-    if (stored === "1") setIsAuthenticated(true);
+    if (stored === "1") {
+      setIsAuthenticated(true);
+      setCurrentUser(localStorage.getItem(USER_KEY) ?? "");
+    }
     setAuthChecked(true);
     try {
       const tpls = localStorage.getItem(TEMPLATES_KEY);
@@ -122,6 +155,8 @@ export default function Home() {
         const json = await res.json();
         if (json.ok) {
           localStorage.setItem(SESSION_KEY, "1");
+          localStorage.setItem(USER_KEY, username);
+          setCurrentUser(username);
           setIsAuthenticated(true);
         } else {
           setLoginError(json.error ?? "เข้าสู่ระบบไม่สำเร็จ");
@@ -135,6 +170,8 @@ export default function Home() {
       });
       if (res.ok) {
         localStorage.setItem(SESSION_KEY, "1");
+        localStorage.setItem(USER_KEY, username);
+        setCurrentUser(username);
         setIsAuthenticated(true);
       } else {
         const json = await res.json();
@@ -149,7 +186,9 @@ export default function Home() {
 
   const handleLogout = () => {
     localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(USER_KEY);
     setIsAuthenticated(false);
+    setCurrentUser("");
     setLoginError("");
   };
 
@@ -199,6 +238,14 @@ export default function Home() {
         setDbColumns(res.columns);
         setMappings({});
         setFixedValues({});
+        try {
+          const all = JSON.parse(localStorage.getItem(DETAIL_LABELS_KEY) ?? "{}");
+          setDbColLabels(all[trimmed] ?? {});
+        } catch { setDbColLabels({}); }
+        try {
+          const allReq = JSON.parse(localStorage.getItem(REQUIRED_COLS_KEY) ?? "{}");
+          setRequiredCols(new Set<string>(allReq[trimmed] ?? []));
+        } catch { setRequiredCols(new Set()); }
         setLoadColStatus("idle");
       } else {
         setLoadColStatus("error");
@@ -309,6 +356,7 @@ export default function Home() {
       }
     };
     reader.readAsArrayBuffer(file);
+    setMappingChanged(false);
   }, [parseSheet]);
 
   const handleSheetChange = (sheetName: string) => {
@@ -342,16 +390,19 @@ export default function Home() {
     if (!trimmed || dbColumns.includes(trimmed)) return;
     setDbColumns((prev) => [...prev, trimmed]);
     setNewDbColInput("");
+    setMappingChanged(true);
   };
 
   const removeDbColumn = (col: string) => {
     setDbColumns((prev) => prev.filter((c) => c !== col));
     setMappings((prev) => { const next = { ...prev }; delete next[col]; return next; });
     setFixedValues((prev) => { const next = { ...prev }; delete next[col]; return next; });
+    setMappingChanged(true);
   };
 
   const clearMapping = (dbCol: string) => {
     setMappings((prev) => { const next = { ...prev }; delete next[dbCol]; return next; });
+    setMappingChanged(true);
   };
 
   const setFixedValue = (dbCol: string, value: string) => {
@@ -359,10 +410,12 @@ export default function Home() {
     if (value !== "") {
       setMappings((prev) => { const next = { ...prev }; delete next[dbCol]; return next; });
     }
+    setMappingChanged(true);
   };
 
   const clearFixedValue = (dbCol: string) => {
     setFixedValues((prev) => { const next = { ...prev }; delete next[dbCol]; return next; });
+    setMappingChanged(true);
   };
 
   const handleDrop = (dbCol: string) => {
@@ -370,27 +423,17 @@ export default function Home() {
       setMappings((prev) => ({ ...prev, [dbCol]: draggedExcelCol }));
       clearFixedValue(dbCol);
       setDraggedExcelCol(null);
+      setMappingChanged(true);
     }
   };
 
   const handleSaveToDb = async () => {
-    const transformed = data.map((row, rowIndex) => {
-      const result: RowData = {};
-      for (const [dbCol, excelCol] of Object.entries(mappings)) {
-        result[dbCol] = excelCol === INDEX_COL ? rowIndex + 1 : (row[excelCol] ?? null);
-      }
-      for (const [dbCol, value] of Object.entries(fixedValues)) {
-        if (value !== "") result[dbCol] = value;
-      }
-      return result;
-    });
-
     setSaveDbStatus("loading");
-    setSaveDbResult({ total: transformed.length, success: 0, error: null });
+    setSaveDbResult({ total: detailPreviewRows.length, success: 0, error: null });
 
     if (!mysqlConnected || !mysqlConfig) {
       setSaveDbStatus("error");
-      setSaveDbResult({ total: transformed.length, success: 0, error: "กรุณาเชื่อมต่อ MySQL ก่อนบันทึก" });
+      setSaveDbResult({ total: detailPreviewRows.length, success: 0, error: "กรุณาเชื่อมต่อ MySQL ก่อนบันทึก" });
       return;
     }
 
@@ -401,23 +444,49 @@ export default function Home() {
         body: JSON.stringify({
           config: mysqlConfig,
           headerTable: headerTable || undefined,
-          headerData: headerColDefs.length > 0 ? headerFieldValues : { doc_no: docNo, date: docDate, branch_code: branchCode },
+          headerData: headerColDefs.length > 0 ? resolveFormulas(headerFieldValues, detailPreviewRows, currentUser) : { doc_no: docNo, date: docDate, branch_code: branchCode },
           detailTable: targetTable || undefined,
-          detailData: transformed,
+          detailData: detailPreviewRows,
         }),
       });
       const result = await r.json();
       if (result.ok) {
         setSaveDbStatus("success");
-        setSaveDbResult({ total: transformed.length, success: result.inserted ?? transformed.length, error: null });
+        setSaveDbResult({ total: detailPreviewRows.length, success: result.inserted ?? detailPreviewRows.length, error: null });
       } else {
         setSaveDbStatus("error");
-        setSaveDbResult({ total: transformed.length, success: 0, error: result.error ?? "เกิดข้อผิดพลาด" });
+        setSaveDbResult({ total: detailPreviewRows.length, success: 0, error: result.error ?? "เกิดข้อผิดพลาด" });
       }
     } catch (err: unknown) {
       setSaveDbStatus("error");
-      setSaveDbResult({ total: transformed.length, success: 0, error: err instanceof Error ? err.message : "ไม่สามารถเชื่อมต่อได้" });
+      setSaveDbResult({ total: detailPreviewRows.length, success: 0, error: err instanceof Error ? err.message : "ไม่สามารถเชื่อมต่อได้" });
     }
+  };
+
+  // ── Required columns handler ──────────────────────────────────────────────
+  const handleToggleRequired = (colName: string) => {
+    setRequiredCols((prev) => {
+      const next = new Set(prev);
+      if (next.has(colName)) next.delete(colName); else next.add(colName);
+      try {
+        const all = JSON.parse(localStorage.getItem(REQUIRED_COLS_KEY) ?? "{}");
+        all[targetTable] = [...next];
+        localStorage.setItem(REQUIRED_COLS_KEY, JSON.stringify(all));
+      } catch {}
+      return next;
+    });
+  };
+
+  // ── Detail column label handler ───────────────────────────────────────────
+  const handleDbColLabelChange = (colName: string, label: string) => {
+    const updated = { ...dbColLabels, [colName]: label };
+    if (!label) delete updated[colName];
+    setDbColLabels(updated);
+    try {
+      const all = JSON.parse(localStorage.getItem(DETAIL_LABELS_KEY) ?? "{}");
+      all[targetTable] = updated;
+      localStorage.setItem(DETAIL_LABELS_KEY, JSON.stringify(all));
+    } catch {}
   };
 
   // ── Header column label handler ───────────────────────────────────────────
@@ -461,6 +530,7 @@ export default function Home() {
     setMappings({ ...tpl.mappings });
     setFixedValues({ ...(tpl.fixedValues ?? {}) });
     setShowTemplatePanel(false);
+    setMappingChanged(true);
   };
 
   const deleteTemplate = (id: string) => {
@@ -470,6 +540,25 @@ export default function Home() {
   };
 
   // ── Derived ───────────────────────────────────────────────────────────────
+  const detailPreviewRows = useMemo<RowData[]>(() => {
+    const transformed = data.map((row, rowIndex) => {
+      const result: RowData = {};
+      for (const [dbCol, excelCol] of Object.entries(mappings)) {
+        result[dbCol] = excelCol === INDEX_COL ? rowIndex + 1 : (row[excelCol] ?? null);
+      }
+      for (const [dbCol, value] of Object.entries(fixedValues)) {
+        if (value !== "") result[dbCol] = value;
+      }
+      return result;
+    });
+    return transformed.filter((row) =>
+      ![...requiredCols].some((col) => {
+        const val = row[col];
+        return val === null || val === undefined || val === "";
+      })
+    );
+  }, [data, mappings, fixedValues, requiredCols]);
+
   const mappedExcelCols = useMemo(() => new Set(Object.values(mappings)), [mappings]);
   const mappedDbCount = Object.keys(mappings).length + Object.keys(fixedValues).filter((k) => fixedValues[k] !== "").length;
   const headersKey = headers.join("|");
@@ -479,6 +568,87 @@ export default function Home() {
   );
 
   const openMysqlModal = () => { setMysqlSaveStatus("idle"); setMysqlSaveError(""); setShowMysqlModal(true); };
+
+  // ── Select Tables confirm: load both tables then go to mapping ────────────
+  const handleSelectTablesConfirm = async (selHeaderTable: string, selDetailTable: string) => {
+    const promises: Promise<void>[] = [];
+
+    if (selHeaderTable) {
+      setHeaderTable(selHeaderTable);
+      setHeaderColStatus("loading");
+      setHeaderColError("");
+      promises.push(
+        fetch("/api/mysql/get-column-defs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config: mysqlConfig, table: selHeaderTable }),
+        })
+          .then((r) => r.json())
+          .then((res) => {
+            if (res.ok && res.columns) {
+              setHeaderColDefs(res.columns);
+              const init: Record<string, string> = {};
+              res.columns.forEach((c: { name: string }) => { init[c.name] = ""; });
+              setHeaderFieldValues(init);
+              try {
+                const all = JSON.parse(localStorage.getItem(COL_LABELS_KEY) ?? "{}");
+                setHeaderColLabels(all[selHeaderTable] ?? {});
+              } catch { setHeaderColLabels({}); }
+              setHeaderColStatus("idle");
+            } else {
+              setHeaderColStatus("error");
+              setHeaderColError(res.error ?? "โหลด header columns ไม่สำเร็จ");
+              throw new Error(res.error ?? "โหลด header columns ไม่สำเร็จ");
+            }
+          })
+      );
+    } else {
+      setHeaderTable("");
+      setHeaderColDefs([]);
+      setHeaderFieldValues({});
+      setHeaderColStatus("idle");
+      setHeaderColError("");
+    }
+
+    setTargetTable(selDetailTable);
+    setLoadColStatus("loading");
+    setLoadColError("");
+    promises.push(
+      fetch("/api/mysql/get-columns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: mysqlConfig, table: selDetailTable }),
+      })
+        .then((r) => r.json())
+        .then((res) => {
+          if (res.ok && res.columns) {
+            setDbColumns(res.columns);
+            setMappings({});
+            setFixedValues({});
+            try {
+              const all = JSON.parse(localStorage.getItem(DETAIL_LABELS_KEY) ?? "{}");
+              setDbColLabels(all[selDetailTable] ?? {});
+            } catch { setDbColLabels({}); }
+            try {
+              const allReq = JSON.parse(localStorage.getItem(REQUIRED_COLS_KEY) ?? "{}");
+              setRequiredCols(new Set<string>(allReq[selDetailTable] ?? []));
+            } catch { setRequiredCols(new Set()); }
+            setLoadColStatus("idle");
+          } else {
+            setLoadColStatus("error");
+            setLoadColError(res.error ?? "โหลด detail columns ไม่สำเร็จ");
+            throw new Error(res.error ?? "โหลด detail columns ไม่สำเร็จ");
+          }
+        })
+    );
+
+    await Promise.all(promises);
+    setShowSelectTablesModal(false);
+    setShowSaveDbModal(false);
+    setSaveDbStatus("idle");
+    setSaveDbResult({ total: 0, success: 0, error: null });
+    setStep("mapping");
+  };
 
   if (!authChecked) return null;
 
@@ -502,6 +672,17 @@ export default function Home() {
           onChange={setMysqlConfig}
           onConnect={handleMysqlConnect}
           onClose={() => { if (mysqlSaveStatus !== "testing") setShowMysqlModal(false); }}
+        />
+      )}
+
+      {showSelectTablesModal && (
+        <SelectTablesModal
+          mysqlConfig={mysqlConfig}
+          mysqlConnected={mysqlConnected}
+          initialHeaderTable={headerTable}
+          initialDetailTable={targetTable}
+          onConfirm={handleSelectTablesConfirm}
+          onClose={() => setShowSelectTablesModal(false)}
         />
       )}
 
@@ -570,7 +751,7 @@ export default function Home() {
                         ล้างข้อมูล
                       </button>
                       <button
-                        onClick={() => setStep("mapping")}
+                        onClick={() => setShowSelectTablesModal(true)}
                         className="flex items-center gap-1.5 px-4 py-2 text-sm bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap"
                       >
                         ถัดไป: Mapping
@@ -632,6 +813,7 @@ export default function Home() {
                 onSave={handleSaveToDb}
                 onClose={() => { if (saveDbStatus !== "loading") setShowSaveDbModal(false); }}
                 onRetry={() => { setSaveDbStatus("idle"); setSaveDbResult({ total: 0, success: 0, error: null }); }}
+                onSuccess={() => { setShowSaveDbModal(false); handleClear(); }}
               />
             )}
 
@@ -691,7 +873,7 @@ export default function Home() {
                 </button>
                 <button
                   onClick={() => { setSaveDbStatus("idle"); setSaveDbResult({ total: 0, success: 0, error: null }); setShowSaveDbModal(true); }}
-                  disabled={mappedDbCount === 0}
+                  disabled={!mappingChanged || mappedDbCount === 0 || !targetTable.trim()}
                   className="flex items-center gap-1.5 px-4 py-2 text-sm bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -721,6 +903,8 @@ export default function Home() {
               headerColError={headerColError}
               headerFieldValues={headerFieldValues}
               headerColLabels={headerColLabels}
+              detailPreviewRows={detailPreviewRows}
+              currentUser={currentUser}
               docNo={docNo}
               docDate={docDate}
               branchCode={branchCode}
@@ -745,13 +929,14 @@ export default function Home() {
                 dbColumns={dbColumns}
                 mappings={mappings}
                 fixedValues={fixedValues}
+                dbColLabels={dbColLabels}
                 draggedExcelCol={draggedExcelCol}
                 dropOverCol={dropOverCol}
                 targetTable={targetTable}
                 loadColStatus={loadColStatus}
                 loadColError={loadColError}
                 newDbColInput={newDbColInput}
-                onTargetTableChange={(v) => { setTargetTable(v); setLoadColStatus("idle"); setLoadColError(""); }}
+                onTargetTableChange={(v) => { setTargetTable(v); setLoadColStatus("idle"); setLoadColError(""); setRequiredCols(new Set()); }}
                 onLoadColumns={handleLoadColumnsFromDb}
                 onNewDbColInputChange={setNewDbColInput}
                 onAddDbColumn={addDbColumn}
@@ -761,6 +946,9 @@ export default function Home() {
                 onClearFixedValue={clearFixedValue}
                 onDropOverCol={setDropOverCol}
                 onDrop={handleDrop}
+                onDbColLabelChange={handleDbColLabelChange}
+                requiredCols={requiredCols}
+                onToggleRequired={handleToggleRequired}
               />
             </div>
           </div>

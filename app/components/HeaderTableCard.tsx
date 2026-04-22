@@ -1,8 +1,20 @@
 "use client";
 
 import { useState } from "react";
-import { ColDef, LoadStatus } from "../types";
+import { ColDef, LoadStatus, RowData } from "../types";
 import { mysqlTypeToInputType } from "../lib/mysqlType";
+
+function resolvePreview(value: string, rows: RowData[], currentUser: string): string | null {
+  if (!/\{sum\(\w+\)\}|\{username\}/i.test(value)) return null;
+  return value.replace(/\{sum\((\w+)\)\}|\{username\}/gi, (match, colName) => {
+    if (match.toLowerCase() === "{username}") return currentUser || "(ไม่มีข้อมูล)";
+    const sum = rows.reduce((acc, row) => {
+      const v = Number(row[colName]);
+      return acc + (isNaN(v) ? 0 : v);
+    }, 0);
+    return parseFloat(sum.toFixed(10)).toString();
+  });
+}
 
 type Props = {
   headerTable: string;
@@ -11,6 +23,8 @@ type Props = {
   headerColError: string;
   headerFieldValues: Record<string, string>;
   headerColLabels: Record<string, string>;
+  detailPreviewRows: RowData[];
+  currentUser: string;
   docNo: string;
   docDate: string;
   branchCode: string;
@@ -29,7 +43,9 @@ export default function HeaderTableCard({
   headerColStatus,
   headerColError,
   headerFieldValues,
-  headerColLabels,
+  headerColLabels = {},
+  detailPreviewRows,
+  currentUser,
   docNo,
   docDate,
   branchCode,
@@ -142,9 +158,12 @@ export default function HeaderTableCard({
           </div>
           <div className="px-4 py-4 flex flex-wrap gap-4">
             {headerColDefs.map((col) => {
-              const inputType = mysqlTypeToInputType(col.type);
               const label = headerColLabels[col.name] || "";
               const isEditing = editingCol === col.name;
+              const fieldValue = headerFieldValues[col.name] ?? "";
+              const preview = resolvePreview(fieldValue, detailPreviewRows, currentUser);
+              const rawType = mysqlTypeToInputType(col.type);
+              const inputType = rawType === "number" ? "text" : rawType;
 
               const commitLabel = () => {
                 onHeaderColLabelChange(col.name, editingValue.trim());
@@ -196,12 +215,23 @@ export default function HeaderTableCard({
                   </div>
 
                   <input
+                    key={`${col.name}-${inputType}`}
                     type={inputType}
-                    value={headerFieldValues[col.name] ?? ""}
+                    value={fieldValue}
                     onChange={(e) => onHeaderFieldChange(col.name, e.target.value)}
-                    step={inputType === "number" ? "any" : undefined}
-                    className="border border-amber-300 bg-white rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 w-40"
+                    placeholder={preview ? "{sum(column)}" : undefined}
+                    className={`border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 w-40 ${
+                      preview
+                        ? "border-blue-300 bg-blue-50 text-blue-700 font-mono focus:ring-blue-400"
+                        : "border-amber-300 bg-white focus:ring-amber-400"
+                    }`}
                   />
+                  {preview && (
+                    <div className="mt-1 flex items-center gap-1">
+                      <span className="text-[10px] text-blue-400">= </span>
+                      <span className="text-[11px] font-mono font-semibold text-blue-600">{preview}</span>
+                    </div>
+                  )}
                 </div>
               );
             })}

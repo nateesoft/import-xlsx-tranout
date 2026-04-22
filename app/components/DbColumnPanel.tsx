@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { LoadStatus } from "../types";
 import { INDEX_COL } from "./ExcelColumnPanel";
 
@@ -7,6 +8,7 @@ type Props = {
   dbColumns: string[];
   mappings: Record<string, string>;
   fixedValues: Record<string, string>;
+  dbColLabels: Record<string, string>;
   draggedExcelCol: string | null;
   dropOverCol: string | null;
   targetTable: string;
@@ -23,12 +25,16 @@ type Props = {
   onClearFixedValue: (dbCol: string) => void;
   onDropOverCol: (col: string | null) => void;
   onDrop: (dbCol: string) => void;
+  onDbColLabelChange: (colName: string, label: string) => void;
+  requiredCols: Set<string>;
+  onToggleRequired: (colName: string) => void;
 };
 
 export default function DbColumnPanel({
   dbColumns,
   mappings,
   fixedValues,
+  dbColLabels,
   draggedExcelCol,
   dropOverCol,
   targetTable,
@@ -45,8 +51,18 @@ export default function DbColumnPanel({
   onClearFixedValue,
   onDropOverCol,
   onDrop,
+  onDbColLabelChange,
+  requiredCols,
+  onToggleRequired,
 }: Props) {
   const isActiveDrag = !!draggedExcelCol;
+  const [editingCol, setEditingCol] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState("");
+
+  const commitLabel = (colName: string) => {
+    onDbColLabelChange(colName, editingValue.trim());
+    setEditingCol(null);
+  };
 
   return (
     <div className="flex-1">
@@ -132,14 +148,54 @@ export default function DbColumnPanel({
               const mappedFrom = mappings[dbCol];
               const fixedVal = fixedValues[dbCol] ?? "";
               const isOver = dropOverCol === dbCol;
+              const label = dbColLabels[dbCol] ?? "";
+              const isEditing = editingCol === dbCol;
+              const isRequired = requiredCols.has(dbCol);
 
               return (
                 <div
                   key={dbCol}
-                  className="px-5 py-3 flex items-center gap-4 hover:bg-gray-50 transition-colors"
+                  className="px-5 py-3 flex items-center gap-4 hover:bg-gray-50 transition-colors group"
                 >
+                  {/* DB column name + inline label editor */}
                   <div className="w-44 flex-shrink-0">
-                    <span className="font-mono text-sm font-medium text-gray-700">{dbCol}</span>
+                    {isEditing ? (
+                      <input
+                        autoFocus
+                        type="text"
+                        value={editingValue}
+                        onChange={(e) => setEditingValue(e.target.value)}
+                        onBlur={() => commitLabel(dbCol)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitLabel(dbCol);
+                          if (e.key === "Escape") setEditingCol(null);
+                        }}
+                        placeholder={dbCol}
+                        className="w-full text-sm font-medium text-gray-700 border border-blue-400 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                      />
+                    ) : (
+                      <div className="flex items-center gap-1">
+                        <div className="min-w-0">
+                          <span className={`block text-sm font-medium truncate ${label ? "text-gray-800" : "text-gray-500 font-mono"}`}>
+                            {label || dbCol}
+                          </span>
+                          {label && (
+                            <span className="block font-mono text-[10px] text-gray-400 truncate">{dbCol}</span>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          title="แก้ไขชื่อแสดง"
+                          onClick={() => { setEditingCol(dbCol); setEditingValue(label); }}
+                          className="opacity-0 group-hover:opacity-100 flex-shrink-0 text-blue-300 hover:text-blue-500 transition-opacity"
+                        >
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                              d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <svg className="w-5 h-5 text-gray-300 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -222,6 +278,16 @@ export default function DbColumnPanel({
                     )}
                   </div>
 
+                  <button
+                    onClick={() => onToggleRequired(dbCol)}
+                    title={isRequired ? "ยกเลิก required" : "กำหนดให้ต้องมีค่า (required)"}
+                    className={`flex-shrink-0 transition-colors ${isRequired ? "text-red-500 hover:text-red-300" : "text-gray-300 hover:text-red-400"}`}
+                  >
+                    <svg className="w-4 h-4" fill={isRequired ? "currentColor" : "none"} stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                    </svg>
+                  </button>
                   <button
                     onClick={() => onRemoveDbColumn(dbCol)}
                     className="text-gray-300 hover:text-red-400 transition-colors flex-shrink-0"

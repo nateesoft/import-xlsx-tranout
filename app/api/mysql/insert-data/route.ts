@@ -31,18 +31,19 @@ export async function POST(req: NextRequest) {
       const entries = Object.entries(
         (headerData as Record<string, unknown>) || {}
       ).filter(([, v]) => v !== "" && v !== null && v !== undefined);
-      if (entries.length > 0) {
-        const safeTbl = (headerTable as string).replace(/`/g, "``");
-        const cols = entries
-          .map(([k]) => `\`${k.replace(/`/g, "``")}\``)
-          .join(", ");
-        const placeholders = entries.map(() => "?").join(", ");
-        const vals = entries.map(([, v]) => v);
-        await (conn.execute as ExecFn)(
-          `INSERT INTO \`${safeTbl}\` (${cols}) VALUES (${placeholders})`,
-          vals
-        );
+      if (entries.length === 0) {
+        throw new Error("ข้อมูล header ว่างทั้งหมด ไม่สามารถบันทึกได้");
       }
+      const safeTbl = (headerTable as string).replace(/`/g, "``");
+      const cols = entries
+        .map(([k]) => `\`${k.replace(/`/g, "``")}\``)
+        .join(", ");
+      const placeholders = entries.map(() => "?").join(", ");
+      const vals = entries.map(([, v]) => v);
+      await (conn.execute as ExecFn)(
+        `INSERT INTO \`${safeTbl}\` (${cols}) VALUES (${placeholders})`,
+        vals
+      );
     }
 
     // 2. Insert detail rows

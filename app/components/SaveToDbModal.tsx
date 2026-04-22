@@ -19,6 +19,7 @@ type Props = {
   onSave: () => void;
   onClose: () => void;
   onRetry: () => void;
+  onSuccess?: () => void;
 };
 
 export default function SaveToDbModal({
@@ -36,6 +37,7 @@ export default function SaveToDbModal({
   onSave,
   onClose,
   onRetry,
+  onSuccess,
 }: Props) {
   return (
     <div
@@ -154,7 +156,7 @@ export default function SaveToDbModal({
                 บันทึก <span className="font-semibold text-green-600">{saveDbResult.success.toLocaleString()}</span> แถว เข้าฐานข้อมูลเรียบร้อย
               </p>
             </div>
-            <button onClick={onClose}
+            <button onClick={onSuccess ?? onClose}
               className="mt-2 px-6 py-2 text-sm bg-green-600 text-white font-medium rounded-lg hover:bg-green-700">
               ปิด
             </button>
