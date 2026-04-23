@@ -132,12 +132,15 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
-call npm run build
+if exist ".next" rmdir /s /q ".next"
+call npx next build
 if %ERRORLEVEL% neq 0 (
-    echo [ERROR] npm run build failed
+    echo [ERROR] next build failed
     pause
     exit /b 1
 )
+xcopy /E /I /Y ".next\static" ".next\standalone\.next\static" >nul
+xcopy /E /I /Y "public" ".next\standalone\public" >nul
 echo       Build complete.
 
 :: -------------------------------------------
@@ -146,7 +149,7 @@ echo       Build complete.
 echo.
 echo Starting app with PM2...
 call pm2 delete %APP_NAME% 2>nul
-call pm2 start node --name "%APP_NAME%" -- node_modules/next/dist/bin/next start
+call pm2 start node --name "%APP_NAME%" -- .next/standalone/server.js
 call pm2 save
 
 :: -------------------------------------------
