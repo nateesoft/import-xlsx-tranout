@@ -7,7 +7,12 @@
     "build": "rm -rf .next && next build && cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public",
     "start": "node .next/standalone/server.js",
     "lint": "eslint",
-    "install:windows": "scripts\\install-windows.bat"
+    "pm2:dev": "pm2 start npm --name \"import-xlsx-tranout-dev\" -- run dev",
+    "pm2:start": "pm2 start npm --name \"import-xlsx-tranout\" -- run start",
+    "pm2:stop": "pm2 stop import-xlsx-tranout",
+    "pm2:restart": "pm2 restart import-xlsx-tranout",
+    "pm2:logs": "pm2 logs import-xlsx-tranout",
+    "pm2:delete": "pm2 delete import-xlsx-tranout"
   },
   "dependencies": {
     "mysql2": "^3.17.4",
