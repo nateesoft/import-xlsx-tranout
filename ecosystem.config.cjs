@@ -4,6 +4,7 @@ module.exports = {
       name: 'import-xlsx-tranout-dev',
       script: 'npm',
       args: 'run dev',
+      interpreter: 'none',
       shell: true,
       watch: false,
     },
