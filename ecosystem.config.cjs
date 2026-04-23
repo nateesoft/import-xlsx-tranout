@@ -2,10 +2,8 @@ module.exports = {
   apps: [
     {
       name: 'import-xlsx-tranout-dev',
-      script: 'npm',
-      args: 'run dev',
-      interpreter: 'none',
-      shell: true,
+      script: 'cmd',
+      args: '/c npm run dev',
       watch: false,
     },
     {
