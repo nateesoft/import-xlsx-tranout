@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\" && next build && node -e \"require('fs').cpSync('.next/static','.next/standalone/.next/static',{recursive:true,force:true});require('fs').cpSync('public','.next/standalone/public',{recursive:true,force:true})\"",
+    "build": "rm -rf .next && next build && cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public",
     "start": "node .next/standalone/server.js",
     "lint": "eslint",
     "pm2:dev": "pm2 start ecosystem.config.cjs --only import-xlsx-tranout-dev",
