@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "rm -rf .next && next build && cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public",
+    "build": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\" && next build && node -e \"require('fs').cpSync('.next/static','.next/standalone/.next/static',{recursive:true,force:true});require('fs').cpSync('public','.next/standalone/public',{recursive:true,force:true})\"",
     "start": "node .next/standalone/server.js",
     "lint": "eslint",
     "pm2:dev": "pm2 start ecosystem.config.cjs --only import-xlsx-tranout-dev",
@@ -15,6 +15,7 @@
     "pm2:delete": "pm2 delete import-xlsx-tranout"
   },
   "dependencies": {
+    "crypto-js": "^4.2.0",
     "mysql2": "^3.17.4",
     "next": "16.1.6",
     "react": "19.2.3",
@@ -23,6 +24,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/crypto-js": "^4.2.2",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

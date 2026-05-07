@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import mysql, { type QueryResult, type FieldPacket } from "mysql2/promise";
+import { Unicode2ASCII } from "../utils/StringUtil";
 
 type RowData = Record<string, string | number | boolean | null>;
 
@@ -38,7 +39,7 @@ export async function POST(req: NextRequest) {
       const cols = entries
         .map(([k]) => `\`${k.replace(/`/g, "``")}\``)
         .join(", ");
-      const placeholders = entries.map(() => "?").join(", ");
+      const placeholders = Unicode2ASCII(entries.map(() => "?").join(", "));
       const vals = entries.map(([, v]) => v);
       await (conn.execute as ExecFn)(
         `INSERT INTO \`${safeTbl}\` (${cols}) VALUES (${placeholders})`,
@@ -62,7 +63,7 @@ export async function POST(req: NextRequest) {
         const cols = entries
           .map(([k]) => `\`${k.replace(/`/g, "``")}\``)
           .join(", ");
-        const placeholders = entries.map(() => "?").join(", ");
+        const placeholders = Unicode2ASCII(entries.map(() => "?").join(", "));
         const vals = entries.map(([, v]) => v);
         await (conn.execute as ExecFn)(
           `INSERT INTO \`${safeTbl}\` (${cols}) VALUES (${placeholders})`,
