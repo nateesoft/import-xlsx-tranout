@@ -137,7 +137,21 @@ export default function Home() {
     } catch {}
     fetch("/api/mysql/load-config")
       .then((r) => r.json())
-      .then((cfg) => { if (cfg) setMysqlConfig(cfg); })
+      .then(async (cfg) => {
+        if (!cfg) return;
+        setMysqlConfig(cfg);
+        if (cfg.lastHeaderTable) setHeaderTable(cfg.lastHeaderTable);
+        if (cfg.lastDetailTable) setTargetTable(cfg.lastDetailTable);
+        try {
+          const res = await fetch("/api/mysql/test-connection", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(cfg),
+          });
+          const json = await res.json();
+          if (json.ok) setMysqlConnected(true);
+        } catch {}
+      })
       .catch(() => {});
   }, []);
 
@@ -158,6 +172,7 @@ export default function Home() {
           localStorage.setItem(USER_KEY, username);
           setCurrentUser(username);
           setIsAuthenticated(true);
+          setMysqlConnected(true);
         } else {
           setLoginError(json.error ?? "เข้าสู่ระบบไม่สำเร็จ");
         }
@@ -310,6 +325,42 @@ export default function Home() {
       window.removeEventListener("mouseup", onMouseUp);
     };
   }, []);
+
+  // ── Bidirectional sync: shared column names between header and detail tables ─
+  const mappingsRef = useRef(mappings);
+  useEffect(() => { mappingsRef.current = mappings; }, [mappings]);
+
+  // header field → detail fixed value (skip if detail column has an Excel mapping)
+  useEffect(() => {
+    const headerNames = new Set(headerColDefs.map((c) => c.name));
+    const shared = dbColumns.filter((col) => headerNames.has(col));
+    if (!shared.length) return;
+    setFixedValues((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const col of shared) {
+        if (mappingsRef.current[col]) continue;
+        const val = headerFieldValues[col] ?? "";
+        if (next[col] !== val) { next[col] = val; changed = true; }
+      }
+      return changed ? next : prev;
+    });
+  }, [headerFieldValues]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // detail fixed value → header field
+  useEffect(() => {
+    const headerNames = new Set(headerColDefs.map((c) => c.name));
+    if (!headerNames.size) return;
+    setHeaderFieldValues((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const [col, val] of Object.entries(fixedValues)) {
+        if (!headerNames.has(col)) continue;
+        if (prev[col] !== val) { next[col] = val; changed = true; }
+      }
+      return changed ? next : prev;
+    });
+  }, [fixedValues]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const startResize = (e: React.MouseEvent, col: string) => {
     e.preventDefault();
@@ -643,6 +694,24 @@ export default function Home() {
     );
 
     await Promise.all(promises);
+
+    // Auto-apply latest template matching this detail table + Excel headers
+    const currentHeadersKey = headers.join("|");
+    const latestTpl = [...templates]
+      .filter((t) => t.targetTable === selDetailTable && t.headersKey === currentHeadersKey)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    if (latestTpl) {
+      setDbColumns([...latestTpl.dbColumns]);
+      setMappings({ ...latestTpl.mappings });
+      setFixedValues({ ...(latestTpl.fixedValues ?? {}) });
+      setMappingChanged(true);
+    }
+
+    fetch("/api/mysql/save-config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...mysqlConfig, lastHeaderTable: selHeaderTable, lastDetailTable: selDetailTable }),
+    }).catch(() => {});
     setShowSelectTablesModal(false);
     setShowSaveDbModal(false);
     setSaveDbStatus("idle");
@@ -751,7 +820,17 @@ export default function Home() {
                         ล้างข้อมูล
                       </button>
                       <button
-                        onClick={() => setShowSelectTablesModal(true)}
+                        onClick={async () => {
+                          if (mysqlConnected && targetTable.trim()) {
+                            try {
+                              await handleSelectTablesConfirm(headerTable, targetTable);
+                            } catch {
+                              setShowSelectTablesModal(true);
+                            }
+                          } else {
+                            setShowSelectTablesModal(true);
+                          }
+                        }}
                         className="flex items-center gap-1.5 px-4 py-2 text-sm bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap"
                       >
                         ถัดไป: Mapping

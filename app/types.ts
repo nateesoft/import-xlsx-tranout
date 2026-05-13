@@ -6,6 +6,8 @@ export type MySqlConfig = {
   user: string;
   password: string;
   database: string;
+  lastHeaderTable?: string;
+  lastDetailTable?: string;
 };
 
 export type ColDef = { name: string; type: string };
