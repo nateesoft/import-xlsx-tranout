@@ -97,8 +97,8 @@ Write-Log "Step 2: Installing dependencies (npm ci)..."
 Invoke-Cmd npm @("ci") "npm install failed"
 
 # --- Step 3: Build Next.js -------------------------------------------
-Write-Log "Step 3: Building Next.js application..."
-Invoke-Cmd npx @("next", "build") "Build failed"
+Write-Log "Step 3: Building Next.js application (Windows build)..."
+Invoke-Cmd npm @("run", "build:win") "Build failed"
 
 # --- Step 3b: Validate standalone output -----------------------------
 Write-Log "Step 3b: Validating standalone build output..."
