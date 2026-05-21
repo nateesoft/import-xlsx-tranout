@@ -100,6 +100,36 @@ Invoke-Cmd npm @("ci") "npm install failed"
 Write-Log "Step 3: Building Next.js application..."
 Invoke-Cmd npx @("next", "build") "Build failed"
 
+# --- Step 3b: Validate standalone output -----------------------------
+Write-Log "Step 3b: Validating standalone build output..."
+$standaloneDir    = Join-Path $WORK_DIR ".next\standalone"
+$standaloneServer = Join-Path $standaloneDir "server.js"
+if (-not (Test-Path $standaloneServer)) {
+    Write-Err "server.js not found at '$standaloneServer'"
+    Write-Err "Fix: add  output: 'standalone'  to next.config.js"
+    Cleanup
+    exit 1
+}
+
+# --- Step 3c: Merge static assets into standalone (same as Jenkinsfile xcopy) ---
+Write-Log "Step 3c: Merging static assets into standalone output..."
+robocopy (Join-Path $WORK_DIR ".next\static") (Join-Path $standaloneDir ".next\static") /E /NFL /NDL /NJH /NJS /W:1 /R:3
+if ($LASTEXITCODE -ge 8) {
+    Write-Err "Failed to copy .next/static into standalone (exit code: $LASTEXITCODE)"
+    Cleanup
+    exit 1
+}
+
+$publicSrc = Join-Path $WORK_DIR "public"
+if (Test-Path $publicSrc) {
+    robocopy $publicSrc (Join-Path $standaloneDir "public") /E /NFL /NDL /NJH /NJS /W:1 /R:3
+    if ($LASTEXITCODE -ge 8) {
+        Write-Err "Failed to copy public into standalone (exit code: $LASTEXITCODE)"
+        Cleanup
+        exit 1
+    }
+}
+
 # --- Step 4: Deploy + PM2 --------------------------------------------
 Write-Log "Step 4: Deploying standalone output to $DEPLOY_DIR..."
 if (-not (Test-Path $DEPLOY_DIR)) {
@@ -124,13 +154,23 @@ module.exports = {
   }],
 }
 '@
-$ecosystemPath = Join-Path $WORK_DIR ".next\standalone\ecosystem.config.cjs"
+$ecosystemPath = Join-Path $standaloneDir "ecosystem.config.cjs"
 Set-Content -Path $ecosystemPath -Value $ecosystemContent -Encoding UTF8
 
-# Mirror standalone -> deploy dir (robocopy /MIR = rsync --delete)
-$standaloneSrc = Join-Path $WORK_DIR ".next\standalone"
-Write-Log "Syncing files to $DEPLOY_DIR..."
-robocopy $standaloneSrc $DEPLOY_DIR /MIR /NFL /NDL /NJH /NJS /W:1 /R:3
+# Validate server.js is still present before deploying
+if (-not (Test-Path $standaloneServer)) {
+    Write-Err "server.js missing from standalone before deploy - aborting"
+    Cleanup
+    exit 1
+}
+
+# Stop PM2 before copying to release any file handles (same as Jenkinsfile)
+Write-Log "Stopping PM2 process before deploy..."
+& pm2 delete $APP_NAME 2>&1 | Out-Null   # suppress output; OK if process doesn't exist yet
+
+# Single robocopy: standalone (already contains .next/static + public) -> DEPLOY_DIR
+Write-Log "Syncing standalone to $DEPLOY_DIR..."
+robocopy $standaloneDir $DEPLOY_DIR /E /MIR /MT:8 /NFL /NDL /NJH /NJS /W:1 /R:3
 # robocopy exit codes: 0-7 = success/warning, 8+ = error
 if ($LASTEXITCODE -ge 8) {
     Write-Err "robocopy failed (exit code: $LASTEXITCODE)"
@@ -138,45 +178,15 @@ if ($LASTEXITCODE -ge 8) {
     exit 1
 }
 
-# Next.js standalone requires .next/static and public copied separately
-$staticSrc = Join-Path $WORK_DIR ".next\static"
-$staticDst = Join-Path $DEPLOY_DIR ".next\static"
-Write-Log "Syncing static assets..."
-robocopy $staticSrc $staticDst /MIR /NFL /NDL /NJH /NJS /W:1 /R:3
-if ($LASTEXITCODE -ge 8) {
-    Write-Err "robocopy static failed (exit code: $LASTEXITCODE)"
-    Cleanup
-    exit 1
-}
-
-$publicSrc = Join-Path $WORK_DIR "public"
-$publicDst = Join-Path $DEPLOY_DIR "public"
-if (Test-Path $publicSrc) {
-    robocopy $publicSrc $publicDst /MIR /NFL /NDL /NJH /NJS /W:1 /R:3
-    if ($LASTEXITCODE -ge 8) {
-        Write-Err "robocopy public failed (exit code: $LASTEXITCODE)"
-        Cleanup
-        exit 1
-    }
-}
-
 # Record deployed commit
 Set-Content -Path (Join-Path $DEPLOY_DIR ".deployed_commit") -Value $LATEST_COMMIT -Encoding UTF8
 
-# Start or restart PM2
+# Start PM2 fresh (always start, never restart, so cwd/__dirname resolves correctly)
 Write-Log "Step 4: Starting PM2..."
 $ecosystemDeploy = Join-Path $DEPLOY_DIR "ecosystem.config.cjs"
-
-$pm2Status = & pm2 describe $APP_NAME
-if ($LASTEXITCODE -eq 0) {
-    Invoke-Cmd pm2 @("restart", $ecosystemDeploy, "--only", $APP_NAME, "--env", "production") `
-        "pm2 restart failed"
-    Write-Log "PM2 restarted: $APP_NAME"
-} else {
-    Invoke-Cmd pm2 @("start", $ecosystemDeploy, "--only", $APP_NAME, "--env", "production") `
-        "pm2 start failed"
-    Write-Log "PM2 started: $APP_NAME"
-}
+Invoke-Cmd pm2 @("start", $ecosystemDeploy, "--only", $APP_NAME, "--env", "production") `
+    "pm2 start failed"
+Write-Log "PM2 started: $APP_NAME"
 
 & pm2 save
 if ($LASTEXITCODE -ne 0) { Write-Warn "pm2 save failed (non-fatal)" }
