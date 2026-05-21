@@ -2,7 +2,7 @@ module.exports = {
   apps: [
     {
       name: 'import-xlsx-tranout',
-      script: 'server.js',
+      script: '.next/standalone/server.js',
       cwd: __dirname,
       watch: false,
       env_production: {
@@ -10,12 +10,6 @@ module.exports = {
         PORT: 3000,
         HOSTNAME: '0.0.0.0',
       },
-    },
-    {
-      name: 'import-xlsx-tranout-dev',
-      script: 'cmd',
-      args: '/c npm run dev',
-      watch: false,
-    },
-  ],
+    }
+  ]
 }
