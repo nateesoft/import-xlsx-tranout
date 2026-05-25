@@ -21,3 +21,8 @@ https://nodejs.org/dist/v24.16.0/node-v24.16.0-arm64.msi
 7. ติดตั้ง app ใน browser เป็น application desktop ได้จาก chrome
 
 #####################################
+
+-- รันใน MySQL 5.0 server
+SET old_passwords = 0;
+SET PASSWORD FOR 'your_user'@'%' = PASSWORD('your_password');
+FLUSH PRIVILEGES;

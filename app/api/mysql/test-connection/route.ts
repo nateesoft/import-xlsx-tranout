@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import mysql from "mysql";
-import { promisify } from "util";
 
 function createConn(config: Record<string, unknown>, timeout = 5000) {
   return mysql.createConnection({
@@ -11,20 +10,21 @@ function createConn(config: Record<string, unknown>, timeout = 5000) {
     database: config.database as string,
     charset: "utf8mb4",
     connectTimeout: timeout,
+    insecureAuth: true,
   });
 }
 
 export async function POST(req: NextRequest) {
-  let conn: mysql.Connection | undefined;
-  try {
-    const config = await req.json();
-    conn = createConn(config);
-    await promisify(conn.connect.bind(conn))();
-    return NextResponse.json({ ok: true });
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "Unknown error";
-    return NextResponse.json({ ok: false, error: msg });
-  } finally {
-    if (conn) conn.end();
-  }
+  const config = await req.json();
+  return new Promise<NextResponse>((resolve) => {
+    const conn = createConn(config);
+    conn.connect((err) => {
+      conn.end();
+      if (err) {
+        resolve(NextResponse.json({ ok: false, error: err.message }));
+      } else {
+        resolve(NextResponse.json({ ok: true }));
+      }
+    });
+  });
 }

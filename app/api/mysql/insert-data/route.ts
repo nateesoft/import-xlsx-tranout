@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import mysql from "mysql";
-import { promisify } from "util";
 import { Unicode2ASCII } from "../utils/StringUtil";
 
 type RowData = Record<string, string | number | boolean | null>;
@@ -14,76 +13,97 @@ function createConn(config: Record<string, unknown>, timeout = 5000) {
     database: config.database as string,
     charset: "utf8mb4",
     connectTimeout: timeout,
+    insecureAuth: true,
   });
 }
 
 export async function POST(req: NextRequest) {
-  let conn: mysql.Connection | undefined;
-  try {
-    const { config, headerTable, headerData, detailTable, detailData } =
-      await req.json();
+  const { config, headerTable, headerData, detailTable, detailData } =
+    await req.json();
 
-    conn = createConn(config, 10000);
-    await promisify(conn.connect.bind(conn))();
-    const query = promisify(conn.query.bind(conn)) as (
-      sql: string,
-      values: unknown[]
-    ) => Promise<unknown>;
-    const beginTransaction = promisify(conn.beginTransaction.bind(conn));
-    const commit = promisify(conn.commit.bind(conn));
-    const rollback = promisify(conn.rollback.bind(conn));
-
-    await beginTransaction();
-
-    // 1. Insert header row
-    if (headerTable) {
-      const entries = Object.entries(
-        (headerData as Record<string, unknown>) || {}
-      ).filter(([, v]) => v !== "" && v !== null && v !== undefined);
-      if (entries.length === 0) {
-        throw new Error("ข้อมูล header ว่างทั้งหมด ไม่สามารถบันทึกได้");
+  return new Promise<NextResponse>((resolve) => {
+    const conn = createConn(config, 10000);
+    conn.connect((connErr) => {
+      if (connErr) {
+        conn.end();
+        return resolve(NextResponse.json({ ok: false, error: connErr.message }));
       }
-      const safeTbl = (headerTable as string).replace(/`/g, "``");
-      const cols = entries
-        .map(([k]) => `\`${k.replace(/`/g, "``")}\``)
-        .join(", ");
-      const placeholders = Unicode2ASCII(entries.map(() => "?").join(", "));
-      const vals = entries.map(([, v]) => v);
-      await query(
-        `INSERT INTO \`${safeTbl}\` (${cols}) VALUES (${placeholders})`,
-        vals
-      );
-    }
 
-    // 2. Insert detail rows
-    let inserted = 0;
-    if (detailTable && Array.isArray(detailData) && detailData.length > 0) {
-      const safeTbl = (detailTable as string).replace(/`/g, "``");
-      for (const row of detailData as RowData[]) {
-        const entries = Object.entries(row).filter(
-          ([, v]) => v !== null && v !== undefined
-        );
-        if (entries.length === 0) continue;
-        const cols = entries
-          .map(([k]) => `\`${k.replace(/`/g, "``")}\``)
-          .join(", ");
-        const placeholders = Unicode2ASCII(entries.map(() => "?").join(", "));
-        const vals = entries.map(([, v]) => v);
-        await query(
-          `INSERT INTO \`${safeTbl}\` (${cols}) VALUES (${placeholders})`,
-          vals
-        );
-        inserted++;
-      }
-    }
+      conn.beginTransaction((txErr) => {
+        if (txErr) {
+          conn.end();
+          return resolve(NextResponse.json({ ok: false, error: txErr.message }));
+        }
 
-    await commit();
-    return NextResponse.json({ ok: true, inserted });
-  } catch (e: unknown) {
-    if (conn) await promisify(conn.rollback.bind(conn))().catch(() => {});
-    const msg = e instanceof Error ? e.message : "Unknown error";
-    return NextResponse.json({ ok: false, error: msg });
-  } finally {
-    if (conn) conn.end();
-  }
+        const rollbackAndResolve = (msg: string) => {
+          conn.rollback(() => conn.end());
+          resolve(NextResponse.json({ ok: false, error: msg }));
+        };
+
+        const insertHeader = (next: () => void) => {
+          if (!headerTable) return next();
+          const entries = Object.entries(
+            (headerData as Record<string, unknown>) || {}
+          ).filter(([, v]) => v !== "" && v !== null && v !== undefined);
+          if (entries.length === 0) {
+            return rollbackAndResolve("ข้อมูล header ว่างทั้งหมด ไม่สามารถบันทึกได้");
+          }
+          const safeTbl = (headerTable as string).replace(/`/g, "``");
+          const cols = entries.map(([k]) => `\`${k.replace(/`/g, "``")}\``).join(", ");
+          const placeholders = Unicode2ASCII(entries.map(() => "?").join(", "));
+          const vals = entries.map(([, v]) => v);
+          conn.query(
+            `INSERT INTO \`${safeTbl}\` (${cols}) VALUES (${placeholders})`,
+            vals,
+            (err) => {
+              if (err) return rollbackAndResolve(err.message);
+              next();
+            }
+          );
+        };
+
+        const insertDetails = (next: (inserted: number) => void) => {
+          if (!detailTable || !Array.isArray(detailData) || detailData.length === 0) {
+            return next(0);
+          }
+          const safeTbl = (detailTable as string).replace(/`/g, "``");
+          let inserted = 0;
+          const rows = (detailData as RowData[]).filter((row) =>
+            Object.values(row).some((v) => v !== null && v !== undefined)
+          );
+
+          const insertNext = (i: number) => {
+            if (i >= rows.length) return next(inserted);
+            const entries = Object.entries(rows[i]).filter(([, v]) => v !== null && v !== undefined);
+            if (entries.length === 0) return insertNext(i + 1);
+            const cols = entries.map(([k]) => `\`${k.replace(/`/g, "``")}\``).join(", ");
+            const placeholders = Unicode2ASCII(entries.map(() => "?").join(", "));
+            const vals = entries.map(([, v]) => v);
+            conn.query(
+              `INSERT INTO \`${safeTbl}\` (${cols}) VALUES (${placeholders})`,
+              vals,
+              (err) => {
+                if (err) return rollbackAndResolve(err.message);
+                inserted++;
+                insertNext(i + 1);
+              }
+            );
+          };
+          insertNext(0);
+        };
+
+        insertHeader(() => {
+          insertDetails((inserted) => {
+            conn.commit((commitErr) => {
+              conn.end();
+              if (commitErr) {
+                return resolve(NextResponse.json({ ok: false, error: commitErr.message }));
+              }
+              resolve(NextResponse.json({ ok: true, inserted }));
+            });
+          });
+        });
+      });
+    });
+  });
 }
