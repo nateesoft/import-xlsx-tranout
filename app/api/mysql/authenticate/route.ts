@@ -11,6 +11,7 @@ function createConn(config: Record<string, unknown>, timeout = 5000) {
     charset: "utf8",
     connectTimeout: timeout,
     insecureAuth: true,
+    flags: ["-PROTOCOL_41"],
   });
 }
 

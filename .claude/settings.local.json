@@ -18,7 +18,8 @@
       "Bash(node_modules/electron/dist/Electron.app/Contents/MacOS/Electron test_debug.js)",
       "Bash(ELECTRON_RUN_AS_NODE=0 node_modules/electron/dist/Electron.app/Contents/MacOS/Electron test_debug.js)",
       "Bash(grep -E \"\\\\.\\(ts|tsx|js|json\\)$\")",
-      "Bash(npm list *)"
+      "Bash(npm list *)",
+      "Bash(node -e \"const m = require\\('mysql'\\); const c = m.createConnection\\({host:'x',user:'x',password:'x',insecureAuth:true,flags:['-PROTOCOL_41']}\\); console.log\\('flags ok'\\)\")"
     ]
   }
 }
