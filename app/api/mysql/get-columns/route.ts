@@ -8,9 +8,8 @@ function createConn(config: Record<string, unknown>, timeout = 5000) {
     user: config.user as string,
     password: config.password as string,
     database: config.database as string,
-    charset: "utf8mb4",
+    charset: "utf8",
     connectTimeout: timeout,
-    insecureAuth: true,
   });
 }
 
