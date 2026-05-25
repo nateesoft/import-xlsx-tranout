@@ -17,7 +17,8 @@
       "Bash(./node_modules/.bin/electron test_debug.js)",
       "Bash(node_modules/electron/dist/Electron.app/Contents/MacOS/Electron test_debug.js)",
       "Bash(ELECTRON_RUN_AS_NODE=0 node_modules/electron/dist/Electron.app/Contents/MacOS/Electron test_debug.js)",
-      "Bash(grep -E \"\\\\.\\(ts|tsx|js|json\\)$\")"
+      "Bash(grep -E \"\\\\.\\(ts|tsx|js|json\\)$\")",
+      "Bash(npm list *)"
     ]
   }
 }
