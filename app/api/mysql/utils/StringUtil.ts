@@ -24,9 +24,11 @@ const decryptData = (text: string): string | undefined => {
 
 const Unicode2ASCII = (unicode: string): string => {
   if (!unicode) return "";
-  const ascii = unicode.split("");
-  for (let i = 0; i < unicode.length; i++) {
-    const code = unicode.charCodeAt(i);
+  // Strip invisible/zero-width chars (e.g. U+2063) that latin1/TIS620 columns cannot store
+  const cleaned = unicode.replace(/[\u00AD\u034F\u200B-\u200F\u2060-\u206F\uFEFF]/g, "").trim();
+  const ascii = cleaned.split("");
+  for (let i = 0; i < cleaned.length; i++) {
+    const code = cleaned.charCodeAt(i);
     if (0xe01 <= code && code <= 0xe5b) {
       ascii[i] = String.fromCharCode(code - 0xd60);
     }
