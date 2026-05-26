@@ -49,10 +49,11 @@ export async function POST(req: NextRequest) {
           }
           const safeTbl = (headerTable as string).replace(/`/g, "``");
           const cols = entries.map(([k]) => `\`${k.replace(/`/g, "``")}\``).join(", ");
-          const placeholders = Unicode2ASCII(entries.map(() => "?").join(", "));
-          const vals = entries.map(([, v]) => v);
+          const placeholders = entries.map(() => "?").join(", ");
+          const updates = entries.map(([k]) => `\`${k.replace(/`/g, "``")}\` = VALUES(\`${k.replace(/`/g, "``")}\`)`).join(", ");
+          const vals = entries.map(([, v]) => typeof v === "string" ? Unicode2ASCII(v) : v);
           conn.query(
-            `INSERT INTO \`${safeTbl}\` (${cols}) VALUES (${placeholders})`,
+            `INSERT INTO \`${safeTbl}\` (${cols}) VALUES (${placeholders}) ON DUPLICATE KEY UPDATE ${updates}`,
             vals,
             (err) => {
               if (err) return rollbackAndResolve(err.message);
@@ -76,8 +77,8 @@ export async function POST(req: NextRequest) {
             const entries = Object.entries(rows[i]).filter(([, v]) => v !== null && v !== undefined);
             if (entries.length === 0) return insertNext(i + 1);
             const cols = entries.map(([k]) => `\`${k.replace(/`/g, "``")}\``).join(", ");
-            const placeholders = Unicode2ASCII(entries.map(() => "?").join(", "));
-            const vals = entries.map(([, v]) => v);
+            const placeholders = entries.map(() => "?").join(", ");
+            const vals = entries.map(([, v]) => typeof v === "string" ? Unicode2ASCII(v) : v);
             conn.query(
               `INSERT INTO \`${safeTbl}\` (${cols}) VALUES (${placeholders})`,
               vals,
