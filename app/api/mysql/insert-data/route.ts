@@ -13,8 +13,6 @@ function createConn(config: Record<string, unknown>, timeout = 5000) {
     database: config.database as string,
     charset: "utf8",
     connectTimeout: timeout,
-    insecureAuth: true,
-    flags: ["-PLUGIN_AUTH", "-CONNECT_ATTRS"],
   });
 }
 
