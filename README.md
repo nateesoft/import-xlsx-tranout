@@ -26,3 +26,36 @@ https://nodejs.org/dist/v24.16.0/node-v24.16.0-arm64.msi
 SET old_passwords = 0;
 SET PASSWORD FOR 'your_user'@'%' = PASSWORD('your_password');
 FLUSH PRIVILEGES;
+
+
+รันคำสั่งเหล่านี้ใน MySQL CLI บนเครื่อง Windows (ที่มี MySQL 5.0.21) ครับ:
+
+
+-- ตรวจค่า config ที่เกี่ยวข้องกับ authentication ทั้งหมด
+SHOW VARIABLES LIKE 'old_passwords';
+SHOW VARIABLES LIKE 'secure_auth';
+SHOW VARIABLES LIKE 'version';
+ผลที่ต้องการเห็น สำหรับ old password (length=16):
+
+Variable	ค่าที่ควรเป็น
+old_passwords	ON หรือ 1
+secure_auth	OFF หรือ 0
+ถ้า secure_auth = ON — นี่คือสาเหตุ ER_HANDSHAKE_ERROR ครับ
+
+MySQL server ปฏิเสธ connection ที่ใช้ old password โดยสิ้นเชิง แก้ได้สองทาง:
+
+ทาง 1: แก้ที่ server — เพิ่มใน my.ini (Windows) แล้ว restart MySQL:
+
+
+[mysqld]
+secure_auth=0
+old_passwords=1
+ทาง 2: reset password ให้เป็น new-style (length=41) แล้วใช้ insecureAuth: false:
+
+
+SET old_passwords = 0;
+SET PASSWORD FOR 'user'@'%' = PASSWORD('your_password');
+ตรวจสอบ user ด้วย:
+
+
+SELECT user, host, password, length(password) FROM mysql.user;
