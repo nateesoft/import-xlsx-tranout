@@ -153,7 +153,7 @@ export default function SaveToDbModal({
             <div>
               <p className="text-base font-semibold text-gray-900">บันทึกสำเร็จ</p>
               <p className="text-sm text-gray-500 mt-1">
-                บันทึก <span className="font-semibold text-green-600">{saveDbResult.success.toLocaleString()}</span> แถว เข้าฐานข้อมูลเรียบร้อย
+                บันทึก/อัพเดต <span className="font-semibold text-green-600">{saveDbResult.success.toLocaleString()}</span> แถว เข้าฐานข้อมูลเรียบร้อย
               </p>
             </div>
             <button onClick={onSuccess ?? onClose}

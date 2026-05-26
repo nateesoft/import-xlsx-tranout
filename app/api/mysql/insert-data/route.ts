@@ -78,9 +78,10 @@ export async function POST(req: NextRequest) {
             if (entries.length === 0) return insertNext(i + 1);
             const cols = entries.map(([k]) => `\`${k.replace(/`/g, "``")}\``).join(", ");
             const placeholders = entries.map(() => "?").join(", ");
+            const updates = entries.map(([k]) => `\`${k.replace(/`/g, "``")}\` = VALUES(\`${k.replace(/`/g, "``")}\`)`).join(", ");
             const vals = entries.map(([, v]) => typeof v === "string" ? Unicode2ASCII(v) : v);
             conn.query(
-              `INSERT INTO \`${safeTbl}\` (${cols}) VALUES (${placeholders})`,
+              `INSERT INTO \`${safeTbl}\` (${cols}) VALUES (${placeholders}) ON DUPLICATE KEY UPDATE ${updates}`,
               vals,
               (err) => {
                 if (err) return rollbackAndResolve(err.message);
